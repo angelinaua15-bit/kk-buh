@@ -30,15 +30,20 @@ function resolveWebAppUrl() {
 const persistDir = fs.existsSync('/data') ? '/data' : path.join(ROOT, 'data');
 fs.mkdirSync(persistDir, { recursive: true });
 
+const webAppUrl = resolveWebAppUrl();
+const onRailway = Boolean(railwayUrl);
+
 export const config = {
   botToken: env.BOT_TOKEN || '',
   adminIds: (env.ADMIN_IDS || '').split(',').map((s) => s.trim()).filter(Boolean).map(Number),
-  webAppUrl: resolveWebAppUrl(),
+  webAppUrl,
   port: Number(env.PORT || 3000),
   host: env.HOST || '0.0.0.0',
   dbPath: env.DB_PATH || path.join(persistDir, 'kkbuh.sqlite'),
   webhookSecret: env.WEBHOOK_SECRET || '',
-  useWebhook: env.USE_WEBHOOK === '1' || Boolean(railwayUrl),
+  onRailway,
+  useWebhook: env.USE_WEBHOOK === '1' || onRailway,
+  runPolling: env.RUN_POLLING === '1',
   forceTelegramIp: env.TELEGRAM_FORCE_IP === '1',
   devMode: env.DEV_MODE === '1',
   timezone: env.TZ || 'Europe/Kyiv',

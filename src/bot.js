@@ -29,8 +29,8 @@ function telegramFetch(url, opts = {}) {
     req.end();
   });
 }
-import { all, get, getSetting, run } from './db.js';
-import { upsertTelegramUser } from './auth.js';
+import { all, get, getSetting, run, setSetting } from './db.js';
+import { appUrl, upsertTelegramUser } from './auth.js';
 import {
   ROLES, balances, can, createTx, dashboard, monthOf, setTxStatus, team, today, upcoming,
 } from './services/finance.js';
@@ -41,14 +41,18 @@ export const bot = config.botToken
   : null;
 const pending = new Map();
 
-export const webAppKb = () => {
+export const webAppKb = (user) => {
   const kb = new Keyboard();
-  if (config.webAppUrl) kb.webApp('🦍 Бухгалтерія KK', config.webAppUrl);
+  const url = appUrl(user?.tg_id);
+  if (url) kb.webApp('🦍 Бухгалтерія KK', url).row();
   kb.text('➕ Дохід').text('➖ Витрата').row().text('💼 Баланс').text('📊 Місяць').row().text('📅 План').text('👥 Команда');
   return kb.resized().persistent();
 };
 
-export const appBtn = () => (config.webAppUrl ? InlineKeyboard.from([[{ text: '🦍 Відкрити Mini App', web_app: { url: config.webAppUrl } }]]) : undefined);
+export const appBtn = (user) => {
+  const url = appUrl(user?.tg_id);
+  return url ? InlineKeyboard.from([[{ text: '🦍 Відкрити Mini App', web_app: { url } }]]) : undefined;
+};
 
 export function userFromCtx(ctx) {
   if (!ctx.from) return null;
@@ -62,7 +66,7 @@ function needActive(ctx, user) {
     return false;
   }
   if (user.status !== 'active') {
-    ctx.reply('Заявку надіслано адміну. Після підтвердження зʼявиться повний доступ.', { reply_markup: appBtn() });
+    ctx.reply('Заявку надіслано адміну. Після підтвердження зʼявиться повний доступ.', { reply_markup: appBtn(user) });
     return false;
   }
   return true;
@@ -85,24 +89,28 @@ if (bot) {
     if (u.status === 'pending') {
       return ctx.reply(
         `Привіт, ${u.name}!\n\nЗаявку на доступ до бухгалтерії <b>${config.companyName}</b> надіслано адміну. Напишемо, щойно підтвердять.`,
-        { parse_mode: 'HTML', reply_markup: appBtn() },
+        { parse_mode: 'HTML', reply_markup: appBtn(u) },
       );
     }
     if (!needActive(ctx, u)) return;
-    await ctx.reply('Оновлюю кнопку застосунку…', { reply_markup: { remove_keyboard: true } }).catch(() => {});
+    if (config.webAppUrl) {
+      await bot.api.setChatMenuButton({
+        chat_id: ctx.chat.id,
+        menu_button: { type: 'web_app', text: 'Бухгалтерія', web_app: { url: appUrl(u.tg_id) } },
+      }).catch(() => {});
+    }
     await ctx.reply(
       `🦍 <b>${config.companyName}</b> · бухгалтерія\n\n` +
         `Привіт, ${u.name}. Роль: <b>${ROLES[u.role] || u.role}</b>.\n\n` +
-        `Тисни <b>🦍 Бухгалтерія KK</b> внизу — застосунок на сервері.\n` +
-        `Або пиши суму в чат, наприклад <code>+1200 сайт клієнта</code> / <code>-450 хостинг</code>.`,
-      { parse_mode: 'HTML', reply_markup: webAppKb() },
+        `Тисни <b>🦍 Бухгалтерія KK</b> внизу або кнопку нижче.`,
+      { parse_mode: 'HTML', reply_markup: webAppKb(u) },
     );
   });
 
   bot.command('app', async (ctx) => {
     if (!needActive(ctx, ctx.kk)) return;
     if (!config.webAppUrl) return ctx.reply('WEBAPP_URL ще не налаштовано в .env');
-    await ctx.reply('Відкрий бухгалтерію:', { reply_markup: appBtn() });
+    await ctx.reply('Відкрий бухгалтерію:', { reply_markup: appBtn(ctx.kk) });
   });
 
   bot.command('balance', async (ctx) => {
@@ -121,7 +129,7 @@ if (bot) {
         { parse_mode: 'HTML' },
       );
     }
-    await ctx.reply(monthCard(d), { parse_mode: 'HTML', reply_markup: appBtn() });
+    await ctx.reply(monthCard(d), { parse_mode: 'HTML', reply_markup: appBtn(ctx.kk) });
   });
 
   bot.command('pending', async (ctx) => {
@@ -157,7 +165,7 @@ if (bot) {
     const u = get('SELECT * FROM users WHERE id=?', id);
     await ctx.editMessageText(`${u.name} · ${ctx.match[1] === 'active' ? 'доступ надано' : 'заблоковано'}`);
     if (u.tg_id && ctx.match[1] === 'active') {
-      await bot.api.sendMessage(u.tg_id, `✅ Доступ до бухгалтерії ${config.companyName} підтверджено.`, { reply_markup: webAppKb() }).catch(() => {});
+      await bot.api.sendMessage(u.tg_id, `✅ Доступ до бухгалтерії ${config.companyName} підтверджено.`, { reply_markup: webAppKb(u) }).catch(() => {});
     }
     await ctx.answerCallbackQuery();
   });
@@ -183,7 +191,7 @@ if (bot) {
       return ctx.reply(`💼 <b>Рахунки</b>\n\n${b.accounts.map((a) => `${a.emoji} <b>${a.name}</b> · ${fmt(a.balance, a.currency)}`).join('\n')}\n\nРазом ≈ <b>${fmt(b.total, b.base)}</b>`, { parse_mode: 'HTML' });
     }
     if (textMap[t] === 'report') {
-      return ctx.reply(monthCard(dashboard(u)), { parse_mode: 'HTML', reply_markup: appBtn() });
+      return ctx.reply(monthCard(dashboard(u)), { parse_mode: 'HTML', reply_markup: appBtn(u) });
     }
     if (textMap[t] === 'plan') {
       const rows = upcoming(21);
@@ -216,7 +224,7 @@ if (bot) {
         }, u);
         pending.delete(u.id);
         const extra = tx.status === 'pending' ? '\n⏳ На перевірці в адміна.' : '';
-        return ctx.reply(`${tx.type === 'income' ? '➕' : '➖'} ${fmt(tx.amount, tx.currency)} · ${tx.comment || 'без коментаря'}${extra}`, { reply_markup: appBtn() });
+        return ctx.reply(`${tx.type === 'income' ? '➕' : '➖'} ${fmt(tx.amount, tx.currency)} · ${tx.comment || 'без коментаря'}${extra}`, { reply_markup: appBtn(u) });
       } catch (e) {
         return ctx.reply(e.message || 'Не вдалося зберегти. Відкрий Mini App.');
       }
@@ -241,7 +249,7 @@ if (bot) {
       const buf = Buffer.from(await res.arrayBuffer());
       const { importBuffer } = await import('./services/importSheet.js');
       const result = await importBuffer(buf, name, u);
-      await ctx.reply(`Готово: імпортовано <b>${result.imported}</b>, пропущено ${result.skipped}.`, { parse_mode: 'HTML', reply_markup: appBtn() });
+      await ctx.reply(`Готово: імпортовано <b>${result.imported}</b>, пропущено ${result.skipped}.`, { parse_mode: 'HTML', reply_markup: appBtn(u) });
     } catch (e) {
       await ctx.reply(e.message || 'Не вдалося імпортувати файл.');
     }
@@ -317,6 +325,8 @@ export async function startBot() {
     return;
   }
   const setup = async () => {
+    const me = await bot.api.getMe();
+    setSetting('bot_username', me.username);
     await bot.api.setMyCommands([
       { command: 'start', description: 'Відкрити бухгалтерію' },
       { command: 'app', description: 'Mini App' },
@@ -328,12 +338,18 @@ export async function startBot() {
       await bot.api.setChatMenuButton({
         menu_button: { type: 'web_app', text: 'Бухгалтерія', web_app: { url: config.webAppUrl } },
       });
+      for (const id of config.adminIds) {
+        await bot.api.setChatMenuButton({
+          chat_id: id,
+          menu_button: { type: 'web_app', text: 'Бухгалтерія', web_app: { url: appUrl(id) } },
+        }).catch(() => {});
+      }
     }
   };
   if (config.useWebhook && config.webAppUrl) {
     await bot.api.setWebhook(`${config.webAppUrl}/tg/webhook`, { secret_token: config.webhookSecret || undefined });
     console.log('Webhook set', config.webAppUrl);
-  } else {
+  } else if (config.runPolling) {
     const poll = async () => {
       for (;;) {
         try {
@@ -351,6 +367,8 @@ export async function startBot() {
       }
     };
     poll();
+  } else {
+    console.log('Bot idle locally — production webhook kept. RUN_POLLING=1 to poll.');
   }
   setup().catch((e) => console.error('bot setup', e.message || e));
 }

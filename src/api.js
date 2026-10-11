@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { all, get, getSetting, run, setSetting } from './db.js';
-import { authMiddleware } from './auth.js';
+import { authMiddleware, sessionToken } from './auth.js';
+import { config } from './config.js';
 import { buildWorkbook } from './services/export.js';
 import {
   HttpError, ROLES, audit, balances, byCategory, can, clients, createTx, dashboard, deleteTx,
@@ -18,6 +19,16 @@ const needId = (req) => {
   return id;
 };
 
+api.get('/launch', (_req, res) => {
+  const bot = getSetting('bot_username') || 'KKLabSystemBot';
+  res.json({
+    company: getSetting('company_name') || config.companyName,
+    bot,
+    telegram: bot ? `https://t.me/${bot}?start=app` : '',
+    webAppUrl: config.webAppUrl,
+  });
+});
+
 api.use(authMiddleware);
 
 api.get('/me', (req, res) => {
@@ -25,6 +36,7 @@ api.get('/me', (req, res) => {
     user: req.user,
     roles: ROLES,
     can: Object.fromEntries(Object.entries(can).map(([k, fn]) => [k, fn(req.user)])),
+    session: req.user.tg_id ? sessionToken(req.user.tg_id) : null,
     settings: {
       company: getSetting('company_name') || 'King Kong Lab',
       base_currency: baseCurrency(),

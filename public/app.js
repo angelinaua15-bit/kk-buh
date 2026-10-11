@@ -1,8 +1,24 @@
 const tg = window.Telegram?.WebApp;
-tg?.ready();
-tg?.expand();
-tg?.setHeaderColor('#06051A');
-tg?.setBackgroundColor('#06051A');
+try { tg?.ready(); tg?.expand(); tg?.setHeaderColor('#06051A'); tg?.setBackgroundColor('#06051A'); } catch {}
+
+function readSession() {
+  const q = new URLSearchParams(location.search).get('s');
+  if (q) {
+    localStorage.setItem('kk_sess', q);
+    history.replaceState({}, '', location.pathname);
+  }
+  return q || localStorage.getItem('kk_sess') || '';
+}
+let session = readSession();
+
+async function waitInitData(ms = 1500) {
+  const start = Date.now();
+  while (Date.now() - start < ms) {
+    if (window.Telegram?.WebApp?.initData) return window.Telegram.WebApp.initData;
+    await new Promise((r) => setTimeout(r, 80));
+  }
+  return window.Telegram?.WebApp?.initData || '';
+}
 
 const SYM = { UAH: '₴', USD: '$', EUR: '€', USDT: '₮', PLN: 'zł', GBP: '£' };
 const TYPE = { income: 'Дохід', expense: 'Витрата', transfer: 'Переказ' };
@@ -17,6 +33,10 @@ function ymNow() {
 }
 function today() {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Kyiv' }).format(new Date());
+}
+function monthEnd(ym) {
+  const [y, m] = ym.split('-').map(Number);
+  return `${ym}-${String(new Date(Date.UTC(y, m, 0)).getUTCDate()).padStart(2, '0')}`;
 }
 function shiftMonth(ym, d) {
   const [y, m] = ym.split('-').map(Number);
@@ -43,16 +63,23 @@ function toast(t) {
   toast._t = setTimeout(() => el.classList.add('hidden'), 2200);
 }
 
-async function api(path, opts = {}) {
-  const headers = { ...(opts.headers || {}) };
-  if (tg?.initData) headers.Authorization = `tma ${tg.initData}`;
+function authHeaders() {
+  const headers = {};
+  const init = window.Telegram?.WebApp?.initData;
+  if (init) headers.Authorization = `tma ${init}`;
+  else if (session) headers.Authorization = `sess ${session}`;
   else if (location.search.includes('dev=')) headers['x-dev-user'] = new URLSearchParams(location.search).get('dev');
+  return headers;
+}
+
+async function api(path, opts = {}) {
+  const headers = { ...authHeaders(), ...(opts.headers || {}) };
   if (opts.body && !(opts.body instanceof FormData)) headers['Content-Type'] = 'application/json';
   const res = await fetch('/api' + path, { ...opts, headers, body: opts.body && !(opts.body instanceof FormData) ? JSON.stringify(opts.body) : opts.body });
   if (res.status === 401 || res.status === 403) {
     const j = await res.json().catch(() => ({}));
     if (j.status === 'pending' || j.status === 'blocked' || res.status === 401) {
-      gate(j);
+      showGate(j);
       throw new Error(j.error || 'Немає доступу');
     }
     throw new Error(j.error || 'Немає прав');
@@ -66,10 +93,19 @@ async function api(path, opts = {}) {
   return j;
 }
 
-function gate(j) {
-  const g = document.getElementById('gate');
+function showGate(j = {}) {
+  $('app')?.classList.add('hidden');
+  const g = $('gate');
   g.classList.remove('hidden');
-  g.innerHTML = `<div><img src="/img/logo.png" alt=""><h1>King Kong Lab</h1><p class="muted">${esc(j.error || 'Відкрийте застосунок через Telegram-бота')}</p></div>`;
+  g.removeAttribute('hidden');
+  if (j.error) $('gateMsg').textContent = j.error;
+}
+
+function showApp() {
+  const g = $('gate');
+  g.classList.add('hidden');
+  g.setAttribute('hidden', '');
+  $('app').classList.remove('hidden');
 }
 
 const $ = (id) => document.getElementById(id);
@@ -107,8 +143,9 @@ async function renderDash() {
     </div><h2>Останні</h2><div class="card">${d.recent.map(txRow).join('') || '<div class="empty">Поки порожньо</div>'}</div>`;
     return;
   }
-  const max = Math.max(1, ...d.series.map((s) => s.income + s.expense));
-  const bars = d.series.map((s) => {
+  const series = d.series || [];
+  const max = Math.max(1, ...series.map((s) => s.income + s.expense));
+  const bars = series.map((s) => {
     const h = ((s.income + s.expense) / max) * 100;
     const exp = s.income + s.expense ? (s.expense / (s.income + s.expense)) * 100 : 0;
     return `<span title="${s.month}"><i style="height:${h}%"><i class="exp" style="height:${exp}%"></i></i></span>`;
@@ -125,18 +162,18 @@ async function renderDash() {
     <h2>12 місяців</h2>
     <div class="card"><div class="bars">${bars}</div><div class="muted">фіолет — доходи, рожевий — витрати</div></div>
     <h2>Рахунки</h2>
-    <div class="accounts">${d.balances.accounts.map((a) => `<div class="acc"><div class="e">${a.emoji}</div><div class="n">${esc(a.name)}</div><div class="b">${money(a.balance, a.currency)}</div></div>`).join('')}</div>
+    <div class="accounts">${(d.balances?.accounts || []).map((a) => `<div class="acc"><div class="e">${a.emoji}</div><div class="n">${esc(a.name)}</div><div class="b">${money(a.balance, a.currency)}</div></div>`).join('') || '<div class="muted">Додай рахунок у Ще → Рахунки</div>'}</div>
     ${d.pendingCount ? `<div class="card row"><span>⏳ На перевірці</span><b>${d.pendingCount}</b></div>` : ''}
     <h2>Витрати за категоріями</h2>
-    <div class="card">${d.expenseByCategory.slice(0, 6).map((c) => `<div class="row"><span>${c.emoji} ${esc(c.name)}</span><b>${money(c.total, d.base)}</b></div>`).join('') || '<div class="empty">Немає витрат</div>'}</div>
+    <div class="card">${(d.expenseByCategory || []).slice(0, 6).map((c) => `<div class="row"><span>${c.emoji} ${esc(c.name)}</span><b>${money(c.total, d.base)}</b></div>`).join('') || '<div class="empty">Немає витрат</div>'}</div>
     <h2>Найближчі платежі</h2>
-    <div class="card">${d.upcoming.map((t) => `<div class="row"><span>${t.overdue ? '⚠️' : '📅'} ${t.date} · ${esc(t.comment || t.category_name || '')}</span><b>${signed(t.type === 'income' ? t.amount : -t.amount, t.currency)}</b></div>`).join('') || '<div class="muted">Немає</div>'}</div>
+    <div class="card">${(d.upcoming || []).map((t) => `<div class="row"><span>${t.overdue ? '⚠️' : '📅'} ${t.date} · ${esc(t.comment || t.category_name || '')}</span><b>${signed(t.type === 'income' ? t.amount : -t.amount, t.currency)}</b></div>`).join('') || '<div class="muted">Немає</div>'}</div>
     <h2>Останні операції</h2>
-    <div class="card">${d.recent.map(txRow).join('')}</div>`;
+    <div class="card">${(d.recent || []).map(txRow).join('') || '<div class="empty">Поки немає операцій — натисни +</div>'}</div>`;
 }
 
 async function renderTx() {
-  const q = new URLSearchParams({ month: '', from: state.month + '-01', to: state.month + '-31', limit: 80, ...state.filters });
+  const q = new URLSearchParams({ month: '', from: state.month + '-01', to: monthEnd(state.month), limit: 80, ...state.filters });
   state.tx = await api('/transactions?' + q);
   const f = state.filters;
   view().innerHTML = `
@@ -290,7 +327,7 @@ async function renderClients() {
   const rows = await api('/clients');
   view().innerHTML = `<div class="row"><h1>Клієнти</h1>${state.me.can.writeRefs?'<button class="chip" data-act="new-client">+</button>':''}</div>
     ${rows.map((c) => `<div class="card"><div class="row"><b>${esc(c.name)}</b><span>${money(c.income_base, state.boot.base)}</span></div>
-      <div class="muted">${c.projects_count} проєктів${c.last_payment ? ' · останній платіж ' + c.last_payment : ''}</div></div>`).join('')}`;
+      <div class="muted">${c.projects_count} проєктів${c.last_payment ? ' · останній платіж ' + c.last_payment : ''}</div></div>`).join('') || '<div class="empty">Немає клієнтів</div>'}`;
 }
 
 async function renderTeam() {
@@ -428,8 +465,7 @@ async function renderImport() {
     st.textContent = `Завантажую ${file.name}…`;
     try {
       const headers = { 'X-Filename': file.name, 'Content-Type': file.type || 'application/octet-stream' };
-      if (tg?.initData) headers.Authorization = `tma ${tg.initData}`;
-      else if (location.search.includes('dev=')) headers['x-dev-user'] = new URLSearchParams(location.search).get('dev');
+      Object.assign(headers, authHeaders());
       const res = await fetch('/api/import', { method: 'POST', headers, body: file });
       const j = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(j.error || 'Імпорт не вдався');
@@ -546,7 +582,7 @@ $('searchInput').addEventListener('input', async (e) => {
 });
 $('exportBtn').onclick = async () => {
   try {
-    const blob = await api(`/export.xlsx?from=${state.month}-01&to=${state.month}-31`);
+    const blob = await api(`/export.xlsx?from=${state.month}-01&to=${monthEnd(state.month)}`);
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = `KKLab_${state.month}.xlsx`;
@@ -574,14 +610,28 @@ document.body.addEventListener('click', async (e) => {
 
 async function boot() {
   try {
+    const launch = await fetch('/api/launch').then((r) => r.json()).catch(() => ({}));
+    if (launch.telegram) $('openTg').href = launch.telegram;
+    if (launch.company) {
+      $('company').textContent = launch.company;
+      document.querySelector('.landing h1').textContent = launch.company;
+    }
+  } catch {}
+  if (!session) await waitInitData();
+  else await waitInitData(250);
+  try {
     state.me = await api('/me');
+    if (state.me.session) {
+      session = state.me.session;
+      localStorage.setItem('kk_sess', session);
+    }
     state.boot = await api('/bootstrap');
     $('company').textContent = state.me.settings.company;
     $('who').textContent = `${state.me.user.name} · ${ROLES[state.me.user.role] || state.me.user.role}`;
+    showApp();
     setTab('dash');
   } catch (e) {
-    if (!$('gate').classList.contains('hidden')) return;
-    gate({ error: e.message });
+    showGate({ error: e.message });
   }
 }
 boot();

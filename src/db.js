@@ -209,7 +209,17 @@ function seed() {
     const rates = [['UAH', 1], ['USD', 41.5], ['EUR', 48], ['USDT', 41.5], ['PLN', 11.3], ['GBP', 55]];
     for (const [c, r] of rates) run('INSERT OR IGNORE INTO rates(currency, uah, source) VALUES(?,?,?)', c, r, 'default');
 
+    setSetting('company_name', config.companyName);
     setSetting('seeded', '1');
   });
 }
 seed();
+
+for (const id of config.adminIds) {
+  const row = get('SELECT id, role, status FROM users WHERE tg_id = ?', id);
+  if (!row) {
+    run("INSERT INTO users(tg_id, name, role, status) VALUES(?, 'Ангеліна', 'admin', 'active')", id);
+  } else if (row.role !== 'admin' || row.status !== 'active') {
+    run("UPDATE users SET role='admin', status='active' WHERE tg_id=?", id);
+  }
+}

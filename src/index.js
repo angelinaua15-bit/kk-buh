@@ -31,8 +31,18 @@ if (bot && config.useWebhook) {
   });
 }
 
-app.get('/health', (_req, res) => res.json({ ok: true }));
-app.use(express.static(path.join(ROOT, 'public'), { maxAge: config.devMode ? 0 : '1h', etag: true }));
+app.get('/health', (_req, res) => res.json({
+  ok: true,
+  webAppUrl: config.webAppUrl || null,
+  webhook: config.useWebhook,
+}));
+app.use(express.static(path.join(ROOT, 'public'), {
+  maxAge: 0,
+  etag: false,
+  setHeaders: (res, filePath) => {
+    if (/\.(html|js|css)$/.test(filePath)) res.setHeader('Cache-Control', 'no-store');
+  },
+}));
 app.get('/', (_req, res) => res.sendFile(path.join(ROOT, 'public', 'index.html')));
 
 onNewUser(async (user) => {

@@ -112,8 +112,11 @@ h1 { font-size: 22px; margin: 0 0 12px; letter-spacing: -.03em; }
 .list-btn { width: 100%; text-align: left; background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 14px; margin-bottom: 8px; display: flex; justify-content: space-between; }
 
 .toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(96px + var(--safe-b)); background: #1f1b4d; border: 1px solid var(--line); padding: 10px 16px; border-radius: 12px; z-index: 30; }
-.gate { position: fixed; inset: 0; background: var(--bg); z-index: 40; display: grid; place-items: center; padding: 32px; text-align: center; }
-.gate img { width: 72px; border-radius: 18px; margin-bottom: 16px; }
+.gate { position: fixed; inset: 0; background: radial-gradient(1200px 600px at 50% -10%, #1a1460, var(--bg)); z-index: 40; display: grid; place-items: center; padding: 32px; text-align: center; }
+.gate img { width: 84px; height: 84px; object-fit: cover; border-radius: 22px; margin-bottom: 16px; box-shadow: 0 12px 40px rgba(123,92,255,.28); }
+.landing { width: min(360px, 100%); }
+.landing h1 { margin: 0 0 6px; }
+.landing .btn { margin: 22px 0 14px; display: block; text-decoration: none; color: #fff; }
 
 .table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .table th { text-align: right; color: var(--muted); font-weight: 500; padding: 6px 4px; }
