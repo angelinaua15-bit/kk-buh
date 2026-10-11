@@ -79,32 +79,43 @@ function moneyLine(n, cur = baseCurrency()) {
 
 if (bot) {
   bot.use(async (ctx, next) => {
-    ctx.kk = userFromCtx(ctx);
+    try {
+      ctx.kk = userFromCtx(ctx);
+    } catch (e) {
+      console.error('userFromCtx', e);
+    }
     await next();
   });
 
   bot.command('start', async (ctx) => {
-    const u = ctx.kk;
-    if (!u) return;
-    if (u.status === 'pending') {
-      return ctx.reply(
-        `Привіт, ${u.name}!\n\nЗаявку на доступ до бухгалтерії <b>${config.companyName}</b> надіслано адміну. Напишемо, щойно підтвердять.`,
-        { parse_mode: 'HTML', reply_markup: appBtn(u) },
+    try {
+      const u = ctx.kk;
+      if (!u) {
+        return ctx.reply('🦍 King Kong Lab · бухгалтерія\nНапиши /start ще раз.');
+      }
+      if (u.status === 'pending') {
+        return ctx.reply(
+          `Привіт, ${u.name}!\n\nЗаявку на доступ до бухгалтерії <b>${config.companyName}</b> надіслано адміну. Напишемо, щойно підтвердять.`,
+          { parse_mode: 'HTML', reply_markup: appBtn(u) },
+        );
+      }
+      if (!needActive(ctx, u)) return;
+      if (config.webAppUrl) {
+        await bot.api.setChatMenuButton({
+          chat_id: ctx.chat.id,
+          menu_button: { type: 'web_app', text: 'Бухгалтерія', web_app: { url: appUrl(u.tg_id) } },
+        }).catch(() => {});
+      }
+      await ctx.reply(
+        `🦍 <b>${config.companyName}</b> · бухгалтерія\n\n` +
+          `Привіт, ${u.name}. Роль: <b>${ROLES[u.role] || u.role}</b>.\n\n` +
+          `Тисни <b>🦍 Бухгалтерія KK</b> внизу або кнопку нижче.`,
+        { parse_mode: 'HTML', reply_markup: webAppKb(u) },
       );
+    } catch (e) {
+      console.error('/start', e);
+      await ctx.reply('🦍 Бухгалтерія KK. Тисни кнопку внизу або /app.', { reply_markup: webAppKb(ctx.kk || ctx.from) }).catch(() => {});
     }
-    if (!needActive(ctx, u)) return;
-    if (config.webAppUrl) {
-      await bot.api.setChatMenuButton({
-        chat_id: ctx.chat.id,
-        menu_button: { type: 'web_app', text: 'Бухгалтерія', web_app: { url: appUrl(u.tg_id) } },
-      }).catch(() => {});
-    }
-    await ctx.reply(
-      `🦍 <b>${config.companyName}</b> · бухгалтерія\n\n` +
-        `Привіт, ${u.name}. Роль: <b>${ROLES[u.role] || u.role}</b>.\n\n` +
-        `Тисни <b>🦍 Бухгалтерія KK</b> внизу або кнопку нижче.`,
-      { parse_mode: 'HTML', reply_markup: webAppKb(u) },
-    );
   });
 
   bot.command('app', async (ctx) => {
@@ -324,6 +335,7 @@ export async function startBot() {
     console.log('BOT_TOKEN не задано — працює лише Mini App (dev).');
     return;
   }
+  await bot.init();
   const setup = async () => {
     const me = await bot.api.getMe();
     setSetting('bot_username', me.username);
@@ -347,7 +359,7 @@ export async function startBot() {
     }
   };
   if (config.useWebhook && config.webAppUrl) {
-    await bot.api.setWebhook(`${config.webAppUrl}/tg/webhook`, { secret_token: config.webhookSecret || undefined });
+    await bot.api.setWebhook(`${config.webAppUrl}/tg/webhook`);
     console.log('Webhook set', config.webAppUrl);
   } else if (config.runPolling) {
     const poll = async () => {

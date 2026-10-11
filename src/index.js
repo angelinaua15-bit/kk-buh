@@ -22,12 +22,15 @@ app.use((req, res, next) => {
 app.use('/api', api);
 app.use(apiErrorHandler);
 
-if (bot && config.useWebhook) {
-  app.post('/tg/webhook', (req, res) => {
-    if (config.webhookSecret && req.get('x-telegram-bot-api-secret-token') !== config.webhookSecret) {
-      return res.sendStatus(401);
+if (bot) {
+  app.post('/tg/webhook', async (req, res) => {
+    try {
+      const body = req.body && typeof req.body === 'object' ? req.body : {};
+      if (body.update_id) await bot.handleUpdate(body);
+    } catch (e) {
+      console.error('webhook update', e);
     }
-    bot.handleUpdate(req.body).finally(() => res.sendStatus(200));
+    if (!res.headersSent) res.sendStatus(200);
   });
 }
 
