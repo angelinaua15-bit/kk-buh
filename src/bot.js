@@ -41,14 +41,14 @@ export const bot = config.botToken
   : null;
 const pending = new Map();
 
-const webAppKb = () => {
+export const webAppKb = () => {
   const kb = new Keyboard();
-  if (config.webAppUrl) kb.webApp('🦍 Відкрити бухгалтерію', config.webAppUrl);
+  if (config.webAppUrl) kb.webApp('🦍 Бухгалтерія KK', config.webAppUrl);
   kb.text('➕ Дохід').text('➖ Витрата').row().text('💼 Баланс').text('📊 Місяць').row().text('📅 План').text('👥 Команда');
   return kb.resized().persistent();
 };
 
-const appBtn = () => (config.webAppUrl ? InlineKeyboard.from([[{ text: '🦍 Відкрити Mini App', web_app: { url: config.webAppUrl } }]]) : undefined);
+export const appBtn = () => (config.webAppUrl ? InlineKeyboard.from([[{ text: '🦍 Відкрити Mini App', web_app: { url: config.webAppUrl } }]]) : undefined);
 
 export function userFromCtx(ctx) {
   if (!ctx.from) return null;
@@ -89,10 +89,11 @@ if (bot) {
       );
     }
     if (!needActive(ctx, u)) return;
+    await ctx.reply('Оновлюю кнопку застосунку…', { reply_markup: { remove_keyboard: true } }).catch(() => {});
     await ctx.reply(
       `🦍 <b>${config.companyName}</b> · бухгалтерія\n\n` +
         `Привіт, ${u.name}. Роль: <b>${ROLES[u.role] || u.role}</b>.\n\n` +
-        `Відкрий Mini App — там дашборд, операції, проєкти, P&amp;L і експорт.\n` +
+        `Тисни <b>🦍 Бухгалтерія KK</b> внизу — застосунок на сервері.\n` +
         `Або пиши суму в чат, наприклад <code>+1200 сайт клієнта</code> / <code>-450 хостинг</code>.`,
       { parse_mode: 'HTML', reply_markup: webAppKb() },
     );
@@ -223,6 +224,29 @@ if (bot) {
     return next();
   });
 
+  bot.on('message:document', async (ctx) => {
+    const u = ctx.kk;
+    if (!needActive(ctx, u)) return;
+    if (!can.manageSettings(u)) return ctx.reply('Імпорт таблиці лише для адміна.');
+    const doc = ctx.message.document;
+    const name = doc.file_name || '';
+    if (!/\.(xlsx|xls|csv)$/i.test(name)) return ctx.reply('Надішли Excel (.xlsx) або CSV зі старої таблиці.');
+    await ctx.reply('Імпортую таблицю…');
+    try {
+      const file = await ctx.getFile();
+      const url = `https://api.telegram.org/file/bot${config.botToken}/${file.file_path}`;
+      const res = await (config.forceTelegramIp
+        ? telegramFetch(url)
+        : fetch(url));
+      const buf = Buffer.from(await res.arrayBuffer());
+      const { importBuffer } = await import('./services/importSheet.js');
+      const result = await importBuffer(buf, name, u);
+      await ctx.reply(`Готово: імпортовано <b>${result.imported}</b>, пропущено ${result.skipped}.`, { parse_mode: 'HTML', reply_markup: appBtn() });
+    } catch (e) {
+      await ctx.reply(e.message || 'Не вдалося імпортувати файл.');
+    }
+  });
+
   bot.on('message:photo', async (ctx) => {
     const u = ctx.kk;
     if (!needActive(ctx, u)) return;
@@ -310,19 +334,23 @@ export async function startBot() {
     await bot.api.setWebhook(`${config.webAppUrl}/tg/webhook`, { secret_token: config.webhookSecret || undefined });
     console.log('Webhook set', config.webAppUrl);
   } else {
-    bot.start({
-      drop_pending_updates: false,
-      botInfo: {
-        id: 8899285393,
-        is_bot: true,
-        first_name: 'KKLabSystem',
-        username: 'KKLabSystemBot',
-        can_join_groups: true,
-        can_read_all_group_messages: false,
-        supports_inline_queries: false,
-      },
-      onStart: (i) => console.log(`Bot @${i.username} online`),
-    });
+    const poll = async () => {
+      for (;;) {
+        try {
+          await bot.api.deleteWebhook({ drop_pending_updates: false }).catch(() => {});
+          await bot.start({
+            drop_pending_updates: false,
+            onStart: (i) => console.log(`Bot @${i.username} online`),
+          });
+          return;
+        } catch (e) {
+          const conflict = e?.error_code === 409 || /409|setWebhook/i.test(String(e?.message || e));
+          console.warn(conflict ? 'Webhook conflict, retry polling…' : e?.message || e);
+          await new Promise((r) => setTimeout(r, conflict ? 2500 : 8000));
+        }
+      }
+    };
+    poll();
   }
   setup().catch((e) => console.error('bot setup', e.message || e));
 }

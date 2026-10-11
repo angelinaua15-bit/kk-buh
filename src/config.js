@@ -18,13 +18,22 @@ const railwayUrl = env.RAILWAY_PUBLIC_DOMAIN
   ? `https://${env.RAILWAY_PUBLIC_DOMAIN.replace(/^https?:\/\//, '')}`
   : '';
 
+function resolveWebAppUrl() {
+  const raw = (env.WEBAPP_URL || '').replace(/\/$/, '');
+  const stale = /lhr\.life|loca\.lt|ngrok|pinggy|serveo|trycloudflare|localhost|127\.0\.0\.1|railway\.com\/project/i.test(raw);
+  let host = '';
+  try { host = new URL(raw.startsWith('http') ? raw : `https://${raw}`).hostname; } catch { host = ''; }
+  if (railwayUrl && (!raw || stale || !/\.up\.railway\.app$/i.test(host))) return railwayUrl;
+  return raw || railwayUrl;
+}
+
 const persistDir = fs.existsSync('/data') ? '/data' : path.join(ROOT, 'data');
 fs.mkdirSync(persistDir, { recursive: true });
 
 export const config = {
   botToken: env.BOT_TOKEN || '',
   adminIds: (env.ADMIN_IDS || '').split(',').map((s) => s.trim()).filter(Boolean).map(Number),
-  webAppUrl: (env.WEBAPP_URL || railwayUrl).replace(/\/$/, ''),
+  webAppUrl: resolveWebAppUrl(),
   port: Number(env.PORT || 3000),
   host: env.HOST || '0.0.0.0',
   dbPath: env.DB_PATH || path.join(persistDir, 'kkbuh.sqlite'),

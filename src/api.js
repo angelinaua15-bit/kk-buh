@@ -8,6 +8,7 @@ import {
   runRecurring, setTxStatus, team, today, upcoming, updateTx,
 } from './services/finance.js';
 import { baseCurrency, currencies, fmt, fromMinor, refreshRatesFromNBU, setRate } from './services/money.js';
+import { importBuffer } from './services/importSheet.js';
 
 const api = Router();
 const guard = (check, msg = 'Недостатньо прав') => (req, res, next) => (check(req.user) ? next() : res.status(403).json({ error: msg }));
@@ -243,6 +244,19 @@ api.get('/audit', guard(can.manageUsers), (req, res) => {
   res.json(all(
     `SELECT a.*, u.name AS user_name FROM audit a LEFT JOIN users u ON u.id=a.user_id ORDER BY a.id DESC LIMIT 200`,
   ));
+});
+
+api.post('/import', guard(can.manageSettings), async (req, res, next) => {
+  try {
+    const buf = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body || []);
+    if (!buf.length) return res.status(400).json({ error: 'Файл порожній' });
+    const filename = req.get('x-filename') || 'import.xlsx';
+    const result = await importBuffer(buf, filename, req.user);
+    audit(req.user.id, 'import', 'transactions', null, result);
+    res.json(result);
+  } catch (e) {
+    next(e);
+  }
 });
 
 api.get('/export.xlsx', async (req, res) => {

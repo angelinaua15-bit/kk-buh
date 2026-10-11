@@ -9,7 +9,10 @@ import { InlineKeyboard } from 'grammy';
 
 const app = express();
 app.disable('x-powered-by');
-app.use(express.json({ limit: '2mb' }));
+app.use((req, res, next) => {
+  if (req.path === '/api/import') return express.raw({ type: '*/*', limit: '25mb' })(req, res, next);
+  return express.json({ limit: '2mb' })(req, res, next);
+});
 app.use((req, res, next) => {
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('X-Content-Type-Options', 'nosniff');

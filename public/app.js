@@ -282,7 +282,7 @@ async function renderMore() {
     ['categories', 'Категорії'],
   ];
   if (state.me.can.manageUsers) items.push(['users', 'Доступи']);
-  if (state.me.can.manageSettings) items.push(['settings', 'Налаштування'], ['audit', 'Журнал']);
+  if (state.me.can.manageSettings) items.push(['import', 'Імпорт таблиці'], ['settings', 'Налаштування'], ['audit', 'Журнал']);
   view().innerHTML = `<h1>Ще</h1>${items.map(([id,l]) => `<button class="list-btn" data-more="${id}"><span>${l}</span><span class="muted">›</span></button>`).join('')}`;
 }
 
@@ -411,6 +411,38 @@ async function renderUsers() {
     </div></div>`).join('')}`;
 }
 
+async function renderImport() {
+  view().innerHTML = `<h1>Імпорт таблиці</h1>
+    <div class="card">
+      <p class="muted">Завантаж .xlsx або .csv зі старої Google-таблиці (Файл → Завантажити → Excel).</p>
+      <label class="btn" style="display:block;text-align:center;margin-top:12px">
+        Обрати файл
+        <input id="importFile" type="file" accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden>
+      </label>
+      <div id="importStatus" class="muted" style="margin-top:12px"></div>
+    </div>`;
+  $('importFile').onchange = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const st = $('importStatus');
+    st.textContent = `Завантажую ${file.name}…`;
+    try {
+      const headers = { 'X-Filename': file.name, 'Content-Type': file.type || 'application/octet-stream' };
+      if (tg?.initData) headers.Authorization = `tma ${tg.initData}`;
+      else if (location.search.includes('dev=')) headers['x-dev-user'] = new URLSearchParams(location.search).get('dev');
+      const res = await fetch('/api/import', { method: 'POST', headers, body: file });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(j.error || 'Імпорт не вдався');
+      st.innerHTML = `Готово: імпортовано <b>${j.imported}</b>, пропущено ${j.skipped}.`;
+      toast(`Імпортовано ${j.imported}`);
+      state.boot = await api('/bootstrap');
+    } catch (err) {
+      st.textContent = err.message;
+      toast(err.message);
+    }
+  };
+}
+
 async function renderSettings() {
   const s = await api('/settings');
   view().innerHTML = `<h1>Налаштування</h1><form class="form card" id="setForm">
@@ -440,6 +472,7 @@ const screens = {
   dash: renderDash, tx: renderTx, projects: renderProjects, more: renderMore,
   clients: renderClients, team: renderTeam, pnl: renderPnl, upcoming: renderUpcoming,
   users: renderUsers, settings: renderSettings, audit: renderAudit, recurring: renderRecurring,
+  import: renderImport,
   accounts: renderAccounts, categories: renderCategories,
 };
 
