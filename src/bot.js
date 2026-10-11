@@ -346,14 +346,15 @@ export async function startBot() {
       { command: 'report', description: 'Звіт за місяць' },
       { command: 'pending', description: 'Операції на перевірці' },
     ]);
-    if (config.webAppUrl) {
+    const url = appUrl();
+    if (url) {
       await bot.api.setChatMenuButton({
-        menu_button: { type: 'web_app', text: 'Бухгалтерія', web_app: { url: config.webAppUrl } },
+        menu_button: { type: 'web_app', text: 'Бухгалтерія', web_app: { url } },
       });
       for (const id of config.adminIds) {
         await bot.api.setChatMenuButton({
           chat_id: id,
-          menu_button: { type: 'web_app', text: 'Бухгалтерія', web_app: { url: appUrl(id) } },
+          menu_button: { type: 'web_app', text: 'Бухгалтерія', web_app: { url } },
         }).catch(() => {});
       }
     }

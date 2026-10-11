@@ -24,7 +24,7 @@ api.get('/launch', (_req, res) => {
   res.json({
     company: getSetting('company_name') || config.companyName,
     bot,
-    telegram: bot ? `https://t.me/${bot}?start=app` : '',
+    telegram: bot ? `https://t.me/${bot}?startapp` : '',
     webAppUrl: config.webAppUrl,
   });
 });

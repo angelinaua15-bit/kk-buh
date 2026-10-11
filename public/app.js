@@ -1,5 +1,38 @@
-const tg = window.Telegram?.WebApp;
-try { tg?.ready(); tg?.expand(); tg?.setHeaderColor('#06051A'); tg?.setBackgroundColor('#06051A'); } catch {}
+function initDataFromHash() {
+  try {
+    const raw = location.hash.startsWith('#') ? location.hash.slice(1) : location.hash;
+    if (!raw) return '';
+    return new URLSearchParams(raw).get('tgWebAppData') || '';
+  } catch {
+    return '';
+  }
+}
+
+function tgWebApp() {
+  return window.Telegram?.WebApp || null;
+}
+
+function tgInitData() {
+  return tgWebApp()?.initData || initDataFromHash();
+}
+
+function inTelegram() {
+  const tg = tgWebApp();
+  return Boolean(
+    tgInitData() ||
+    tg?.initDataUnsafe?.user ||
+    tg?.platform ||
+    /Telegram/i.test(navigator.userAgent || '') ||
+    location.hash.includes('tgWebAppData')
+  );
+}
+
+function applyTelegramTheme() {
+  const tg = tgWebApp();
+  if (!tg) return;
+  try { tg.ready(); tg.expand(); tg.setHeaderColor('#06051A'); tg.setBackgroundColor('#06051A'); } catch {}
+}
+applyTelegramTheme();
 
 function readSession() {
   const q = new URLSearchParams(location.search).get('s');
@@ -11,13 +44,15 @@ function readSession() {
 }
 let session = readSession();
 
-async function waitInitData(ms = 1500) {
+async function waitInitData(ms = 2500) {
   const start = Date.now();
   while (Date.now() - start < ms) {
-    if (window.Telegram?.WebApp?.initData) return window.Telegram.WebApp.initData;
+    applyTelegramTheme();
+    const data = tgInitData();
+    if (data) return data;
     await new Promise((r) => setTimeout(r, 80));
   }
-  return window.Telegram?.WebApp?.initData || '';
+  return tgInitData();
 }
 
 const SYM = { UAH: '₴', USD: '$', EUR: '€', USDT: '₮', PLN: 'zł', GBP: '£' };
@@ -65,7 +100,7 @@ function toast(t) {
 
 function authHeaders() {
   const headers = {};
-  const init = window.Telegram?.WebApp?.initData;
+  const init = tgInitData();
   if (init) headers.Authorization = `tma ${init}`;
   else if (session) headers.Authorization = `sess ${session}`;
   else if (location.search.includes('dev=')) headers['x-dev-user'] = new URLSearchParams(location.search).get('dev');
@@ -98,7 +133,13 @@ function showGate(j = {}) {
   const g = $('gate');
   g.classList.remove('hidden');
   g.removeAttribute('hidden');
-  if (j.error) $('gateMsg').textContent = j.error;
+  if (j.loading) {
+    $('openTg')?.classList.add('hidden');
+    $('gateMsg').textContent = 'Відкриваємо бухгалтерію…';
+  } else if (j.error) {
+    $('openTg')?.classList.remove('hidden');
+    $('gateMsg').textContent = j.error;
+  }
 }
 
 function showApp() {
@@ -617,21 +658,27 @@ async function boot() {
       document.querySelector('.landing h1').textContent = launch.company;
     }
   } catch {}
-  if (!session) await waitInitData();
-  else await waitInitData(250);
-  try {
-    state.me = await api('/me');
-    if (state.me.session) {
-      session = state.me.session;
-      localStorage.setItem('kk_sess', session);
+  if (inTelegram()) showGate({ loading: true });
+  await waitInitData(inTelegram() || !session ? 3500 : 250);
+  let lastErr = null;
+  for (let i = 0; i < 3; i++) {
+    try {
+      state.me = await api('/me');
+      if (state.me.session) {
+        session = state.me.session;
+        localStorage.setItem('kk_sess', session);
+      }
+      state.boot = await api('/bootstrap');
+      $('company').textContent = state.me.settings.company;
+      $('who').textContent = `${state.me.user.name} · ${ROLES[state.me.user.role] || state.me.user.role}`;
+      showApp();
+      setTab('dash');
+      return;
+    } catch (e) {
+      lastErr = e;
+      await new Promise((r) => setTimeout(r, 400));
     }
-    state.boot = await api('/bootstrap');
-    $('company').textContent = state.me.settings.company;
-    $('who').textContent = `${state.me.user.name} · ${ROLES[state.me.user.role] || state.me.user.role}`;
-    showApp();
-    setTab('dash');
-  } catch (e) {
-    showGate({ error: e.message });
   }
+  showGate({ error: lastErr?.message || 'Немає доступу' });
 }
 boot();

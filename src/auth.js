@@ -53,10 +53,10 @@ export function verifySession(token) {
   return tgId ? { id: tgId } : null;
 }
 
-export function appUrl(tgId) {
+/** Clean HTTPS URL only — Telegram Mini Apps often fail to open web_app links with query strings. */
+export function appUrl(_tgId) {
   const base = (config.webAppUrl || '').replace(/\/$/, '');
-  if (!base) return '';
-  return tgId ? `${base}/?s=${sessionToken(tgId)}` : base;
+  return base ? `${base}/` : '';
 }
 
 const listeners = [];
