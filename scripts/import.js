@@ -17,8 +17,8 @@ if (!file || !fs.existsSync(file)) {
 const buf = fs.readFileSync(file);
 const result = await importBuffer(buf, path.basename(file), { id: null, role: 'admin' });
 for (const s of result.sheets) {
-  if (s.skipped) console.log(`аркуш «${s.name}»: пропущено (${s.reason})`);
-  else console.log(`аркуш «${s.name}»: ${s.rows} рядків, імпорт ${s.imported}, пропуск ${s.skipped}`);
+  if (s.skipped === true) console.log(`аркуш «${s.name}»: пропущено (${s.reason})`);
+  else console.log(`аркуш «${s.name}»: імпорт ${s.imported}, пропуск ${s.skipped}${s.projects != null ? `, проєктів ${s.projects}` : ''}`);
 }
-console.log(`Готово: імпортовано ${result.imported}, пропущено ${result.skipped}. База: ${path.resolve(process.env.DB_PATH || 'data/kkbuh.sqlite')}`);
+console.log(`Готово: імпортовано ${result.imported}, пропущено ${result.skipped}${result.projects != null ? `, проєктів ${result.projects}` : ''}. База: ${path.resolve(process.env.DB_PATH || 'data/kkbuh.sqlite')}`);
 db.close();
