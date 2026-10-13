@@ -231,6 +231,7 @@ for (const [col, ddl] of [
   ['prog_currency', 'prog_currency TEXT'], ['extra', 'extra TEXT'], ['closed', 'closed INTEGER NOT NULL DEFAULT 0'], ['deal_key', 'deal_key TEXT'],
 ]) addColumn('projects', col, ddl);
 addColumn('transactions', 'deal_part', 'deal_part TEXT');
+addColumn('projects', 'executor_paid', 'executor_paid INTEGER NOT NULL DEFAULT 0');
 db.exec('CREATE UNIQUE INDEX IF NOT EXISTS projects_deal_key ON projects(deal_key) WHERE deal_key IS NOT NULL');
 
 

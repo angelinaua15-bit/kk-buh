@@ -83,11 +83,15 @@ await test('closed deal: client paid in full, executor paid in full', () => {
 await test('open deal: only prepayments recorded, debts computed', () => {
   const d = D.listDeals({ status: 'open' }).find((x) => x.client === '@moskalenko_yuriy');
   assert.equal(d.calc.client_left, 65000); // 1300$ − 650$
-  assert.equal(d.calc.executor_left, 60000); // (1300 − 700) − 0
+  assert.equal(d.calc.executor_left, 0, 'виконавцю виплачено все');
+  assert.equal(d.executor_paid, true);
   const debt = debts().find((x) => x.project_id === d.id);
   assert.equal(debt.left, 65000);
+  const paidOut = get("SELECT SUM(amount) s FROM transactions WHERE project_id=? AND type='expense' AND deleted_at IS NULL", d.id).s;
+  assert.equal(paidOut, 60000, 'виплата виконавцю 1300$ − 700$');
   const p = payouts().people.find((x) => x.name === '@k_vysh');
-  assert.ok(p.due > 0);
+  assert.equal(p.due, 0);
+  assert.equal(D.dealBalances().we_owe_executors_uah, 0);
 });
 
 await test('own work (Ангеліна): no payouts', () => {

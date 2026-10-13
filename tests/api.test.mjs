@@ -280,6 +280,7 @@ try {
     const ex = await sync('GET', '/sync/export');
     const cols = ex.data.deals.columns;
     assert.deepEqual(cols.slice(1, 15), ['Розділ', 'Виконавець', 'Замовник', 'Тип роботи', 'Завдання', 'Дата початку', 'Дата завершення', 'Метод оплати', 'Передоплата', 'Передоплата прог.', 'Ціна', 'Маржа', 'доп послуга, ціна, число оплати', 'Закрита']);
+    assert.equal(cols[15], 'Виконавцю виплачено');
     assert.equal(ex.data.deals.rows.length, 41);
     const row = ex.data.deals.rows.find((r) => r[3] === '@viotiki' && r[5] === 'Переклад сайту на фінську');
     assert.deepEqual(row.slice(6, 15), ['04.02.2026', '06.02.2026', 'Карта', '5000грн', '0грн', '10000грн', '5625грн', '', 'так']);
@@ -290,10 +291,10 @@ try {
     const r = await sync('POST', '/sync/row', { sheet: 'deals', columns: cols, values: edited });
     assert.equal(r.status, 200, JSON.stringify(r.data));
     assert.equal(r.data.row[12], '6000грн');
-    assert.equal(r.data.row[15], '4000грн', 'executor total recomputed');
+    assert.equal(r.data.row[16], '4000грн', 'executor total recomputed');
     // новий рядок без ID
     const blank = cols.map(() => '');
-    const add = Object.assign([...blank], { 1: 'Дизайн', 2: 'Ангеліна', 3: '@sheetclient', 4: 'Креатив', 5: 'Банер', 6: '12.10.2026', 8: 'крипта', 9: '50$', 11: '50$', 12: '50$', 14: 'ні' });
+    const add = Object.assign([...blank], { 1: 'Дизайн', 2: 'Ангеліна', 3: '@sheetclient', 4: 'Креатив', 5: 'Банер', 6: '12.10.2026', 8: 'крипта', 9: '50$', 11: '50$', 12: '50$', 14: 'ні', 15: 'ні' });
     const r2 = await sync('POST', '/sync/row', { sheet: 'deals', columns: cols, values: add });
     assert.equal(r2.status, 200, JSON.stringify(r2.data));
     assert.ok(r2.data.row[0] > 0);

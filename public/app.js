@@ -441,7 +441,7 @@ async function renderMore() {
       ['payouts', '👥 Виплати команді'],
       ['profit', '💹 Прибутковість'],
       ['summary', '📊 Підсумки по місяцях'],
-      ['projects', 'Проєкти (усі)'],
+      ['projects', 'Проєкти — фінанси по кожному'],
       ['clients', 'Клієнти'],
       ['team', 'Команда'],
       ['pnl', 'P&L за рік'],
@@ -654,7 +654,7 @@ async function renderSettings() {
     <label class="switch">Команда бачить усі операції <input type="checkbox" name="member_sees_all" ${s.member_sees_all?'checked':''}></label>
     <label class="switch">Операції команди на перевірку <input type="checkbox" name="member_needs_approval" ${s.member_needs_approval?'checked':''}></label>
     <label class="switch">Ранковий дайджест адміну <input type="checkbox" name="daily_digest" ${s.daily_digest?'checked':''}></label>
-    <label>Підсумки місяця рахувати<select name="summary_by"><option value="end" ${s.summary_by!=='start'?'selected':''}>за датою завершення угоди</option><option value="start" ${s.summary_by==='start'?'selected':''}>за датою початку</option></select></label>
+    <label>Підсумки місяця рахувати<select name="summary_by"><option value="end" ${s.summary_by!=='start'?'selected':''}>за датою завершення проєкту</option><option value="start" ${s.summary_by==='start'?'selected':''}>за датою початку</option></select></label>
     <button class="btn">Зберегти</button>
     <button type="button" class="btn ghost" id="nbu">Оновити курси НБУ</button>
     <button type="button" class="btn ghost" id="backupBtn">💾 Бекап бази в чат</button>
@@ -876,7 +876,7 @@ async function renderDeals() {
   const q = new URLSearchParams({ section: f.section, status: f.status, q: f.q || '' });
   const [rows, bal] = await Promise.all([api('/deals?' + q), state.me.can.writeRefs || state.me.user.role === 'viewer' ? api('/deals/balances').catch(() => null) : null]);
   const chip = (act, v, label, on) => `<button class="chip ${on ? 'on' : ''}" data-act="${act}" data-v="${esc(v)}">${label}</button>`;
-  view().innerHTML = `<div class="row"><h1>Угоди</h1><div>${bal ? '<button class="chip" data-more="summary">📊 Підсумки</button> ' : ''}${state.me.can.writeRefs ? '<button class="chip" data-act="new-deal">+ Угода</button>' : ''}</div></div>
+  view().innerHTML = `<div class="row"><h1>Проєкти</h1><div>${bal ? '<button class="chip" data-more="summary">📊 Підсумки</button> ' : ''}${state.me.can.writeRefs ? '<button class="chip" data-act="new-deal">+ Проєкт</button>' : ''}</div></div>
     ${bal ? `<div class="kpis">
       <div class="kpi"><div class="l">В роботі</div><div class="v">${bal.open}</div></div>
       <div class="kpi"><div class="l">Замовники винні</div><div class="v minus">${money(bal.clients_owe_uah, 'UAH')}</div></div>
@@ -885,7 +885,7 @@ async function renderDeals() {
     <div class="filters">${chip('dsec', '', 'Усі', !f.section)}${SECTIONS_UI.map((x) => chip('dsec', x, x, f.section === x)).join('')}</div>
     <div class="filters">${chip('dst', '', 'Усі', !f.status)}${chip('dst', 'open', '⏳ В роботі', f.status === 'open')}${chip('dst', 'closed', '✅ Закриті', f.status === 'closed')}</div>
     <input class="deal-search" id="dealSearch" placeholder="Пошук: замовник, виконавець, завдання…" value="${esc(f.q || '')}">
-    ${rows.map(dealCard).join('') || '<div class="empty">Немає угод</div>'}`;
+    ${rows.map(dealCard).join('') || '<div class="empty">Немає проєктів</div>'}`;
   const inp = $('dealSearch');
   inp.oninput = () => { clearTimeout(renderDeals.t); renderDeals.t = setTimeout(() => { f.q = inp.value.trim(); renderDeals().then(() => { const x = $('dealSearch'); x.focus(); x.setSelectionRange(x.value.length, x.value.length); }); }, 300); };
 }
@@ -895,7 +895,7 @@ function dealCard(d) {
   if (d.limited) {
     return `<div class="card deal"><div class="row"><b>${esc(d.task)}</b>${st}</div>
       <div class="muted">${esc(d.section)} · ${esc(d.client)} · ${d.start_date || ''}${d.end_date ? ' → ' + d.end_date : ''}</div>
-      <div class="row"><span>Мені за угоду</span><b>${money(d.my.total, d.my.currency)}</b></div>
+      <div class="row"><span>Мені за проєкт</span><b>${money(d.my.total, d.my.currency)}</b></div>
       <div class="row"><span class="muted">Отримано ${money(d.my.paid, d.my.currency)}</span><span class="muted">Залишок ${money(d.my.left, d.my.currency)}</span></div></div>`;
   }
   const c = d.calc;
@@ -910,7 +910,7 @@ function dealCard(d) {
       <span><small>Передоплата</small>${money(d.prepay, d.prepay_currency)}</span>
       <span><small>Передоплата прог.</small>${money(d.prog_prepay, d.prog_currency)}</span>
     </div>
-    ${!d.closed && (c.client_left || c.executor_left) ? `<div class="row sub"><span>Замовник винен <b class="minus">${money(c.client_left, c.currency)}</b></span><span>Виконавцю ще <b>${money(c.executor_left, c.currency)}</b></span></div>` : ''}
+    ${!d.closed ? `<div class="row sub"><span>Замовник винен <b class="minus">${money(c.client_left, c.currency)}</b></span><span>${c.executor_paid ? 'Виконавцю виплачено ✅' : `Виконавцю ще <b>${money(c.executor_left, c.currency)}</b>`}</span></div>` : ''}
     ${d.extra ? `<div class="muted">➕ ${esc(d.extra)}</div>` : ''}
   </div>`;
 }
@@ -923,7 +923,7 @@ async function openDeal(id) {
   const clients = (state.boot.clients || []).map((c) => c.name);
   const people = [...new Set([...(meta.executors || []).map((x) => x.name), ...(state.boot.members || []).map((m) => m.name)])];
   const mCur = d.margin_currency || d.currency;
-  openModal(`<div class="handle"></div><h3>${d.id ? 'Угода' : 'Нова угода'}</h3>
+  openModal(`<div class="handle"></div><h3>${d.id ? 'Проєкт' : 'Новий проєкт'}</h3>
     <form class="form" id="dealForm">
       <label>Розділ<select name="section">${meta.sections.map((x) => `<option ${ (d.section || state.dealF?.section || 'Розробки') === x ? 'selected' : ''}>${x}</option>`).join('')}</select></label>
       <label>Виконавець<input name="executor" list="dlPeople" value="${esc(d.executor || '')}" placeholder="хто робить"></label>${list('dlPeople', people)}
@@ -939,9 +939,10 @@ async function openDeal(id) {
       <div class="money"><label>Маржа<input name="margin" type="number" step="0.01" min="0" value="${d.margin === null || d.margin === undefined ? '' : d.margin / 100}" placeholder="авто: ціна − передоплата прог."></label>${curSel('margin_cur', mCur)}</div>
       <label>Доп. послуга, ціна, число оплати<input name="extra" value="${esc(d.extra || '')}" placeholder="плюс 600 грн 10.03"></label>
       <label class="switch">✅ Закрита й повністю оплачена <input type="checkbox" name="closed" ${d.closed ? 'checked' : ''}></label>
+      <label class="switch">👤 Виконавцю виплачено повністю <input type="checkbox" name="executor_paid" ${d.executor_paid ? 'checked' : ''}></label>
       <div class="card calc" id="dealCalc"></div>
-      <button class="btn">${d.id ? 'Зберегти' : 'Додати угоду'}</button>
-      ${d.id ? '<button type="button" class="btn danger" data-act="del-deal">Видалити угоду</button>' : ''}
+      <button class="btn">${d.id ? 'Зберегти' : 'Додати проєкт'}</button>
+      ${d.id ? '<button type="button" class="btn danger" data-act="del-deal">Видалити проєкт</button>' : ''}
     </form>`, (el) => {
     const form = el.querySelector('#dealForm');
     const num = (n) => Math.round(Number(String(form[n].value || 0).replace(',', '.')) * 100) || 0;
@@ -954,11 +955,13 @@ async function openDeal(id) {
       const margin = marginSet ? (form.margin_cur.value === cur ? num('margin') : null) : (prog === null ? null : price - prog);
       const execTotal = margin === null ? null : Math.max(0, price - margin);
       const closed = form.closed.checked;
+      if (closed) form.executor_paid.checked = true;
+      const execPaid = form.executor_paid.checked;
       el.querySelector('#dealCalc').innerHTML = `
         <div class="row"><span>Маржа${marginSet ? '' : ' (авто)'}</span><b class="plus">${margin === null ? 'у іншій валюті' : money(margin, cur)}</b></div>
         <div class="row"><span>Виконавцю всього</span><b>${execTotal === null ? '—' : money(execTotal, cur)}</b></div>
         <div class="row"><span>Замовник ще винен</span><b class="minus">${closed ? money(0, cur) : prepay === null ? '—' : money(Math.max(0, price - prepay), cur)}</b></div>
-        <div class="row"><span>Виконавцю ще виплатити</span><b>${closed ? money(0, cur) : execTotal === null || prog === null ? '—' : money(Math.max(0, execTotal - prog), cur)}</b></div>`;
+        <div class="row"><span>Виконавцю ще виплатити</span><b>${closed || execPaid ? money(0, cur) : execTotal === null || prog === null ? '—' : money(Math.max(0, execTotal - prog), cur)}</b></div>`;
     };
     form.addEventListener('input', recalc);
     recalc();
@@ -970,14 +973,14 @@ async function openDeal(id) {
         start: form.start.value || '', end: form.end.value || '', method: form.method.value,
         price: m('price', 'price_cur'), prepay: m('prepay', 'prepay_cur') || { amount: 0, currency: form.price_cur.value },
         prog: m('prog', 'prog_cur') || { amount: 0, currency: form.price_cur.value }, margin: m('margin', 'margin_cur'),
-        extra: form.extra.value, closed: form.closed.checked,
+        extra: form.extra.value, closed: form.closed.checked, executor_paid: form.executor_paid.checked || form.closed.checked,
       };
       if (d.id) await api('/deals/' + d.id, { method: 'PATCH', body });
       else await api('/deals', { method: 'POST', body });
       closeModal(); toast('Збережено'); state.boot = await api('/bootstrap'); refresh();
     });
     el.querySelector('[data-act=del-deal]')?.addEventListener('click', () => safe(async () => {
-      if (!(await ask('Видалити угоду разом з її оплатами?'))) return;
+      if (!(await ask('Видалити проєкт разом з його оплатами?'))) return;
       await api('/deals/' + d.id, { method: 'DELETE' });
       closeModal(); toast('Видалено'); refresh();
     }));
@@ -996,7 +999,7 @@ async function renderSummary() {
     <div class="card" style="overflow:auto"><table class="table sum"><tr><th></th>${cols.map((c) => `<th>${c}</th>`).join('')}</tr>
       ${s.months.map((m, i) => `<tr><td>${MONTHS[i]}</td>${cols.map((c) => `<td class="${c === 'Прибуток' ? 'tot' : ''}">${cell(s.table[m][c])}</td>`).join('')}</tr>`).join('')}
       <tr><td><b>Разом</b></td>${cols.map((c) => `<td><b>${cell(s.totals[c])}</b></td>`).join('')}</tr></table></div>
-    <p class="muted">Маржа угод по розділах, у гривнях. Долар — за курсом ${s.usd_rate} (Ще → Налаштування → курси). Рахується автоматично з угод.</p>`;
+    <p class="muted">Маржа проєктів по розділах, у гривнях. Долар — за курсом ${s.usd_rate} (Ще → Налаштування → курси). Рахується автоматично з проєктів.</p>`;
 }
 
 const screens = {
@@ -1016,7 +1019,8 @@ async function refresh() {
 }
 
 function setTab(tab) {
-  if (tab === 'new') return openTx();
+  // «+» по центру — новий проєкт (угода); команді, яка не створює проєкти, — своя операція
+  if (tab === 'new') return state.me.can.writeRefs ? safe(() => openDeal()) : openTx();
   state.tab = tab;
   document.querySelectorAll('.tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === tab && tab !== 'new'));
   refresh();

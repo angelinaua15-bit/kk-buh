@@ -93,7 +93,7 @@ function writeSheet_(name, block, lists) {
   const rule = (list) => SpreadsheetApp.newDataValidation().requireValueInList(list, true).setAllowInvalid(false).build();
   const set = (col, list) => { const i = cols.indexOf(col); if (i >= 0 && list && list.length) sh.getRange(2, i + 1, n, 1).setDataValidation(rule(list)); };
   if (name === SHEETS.deals) {
-    set('Розділ', lists.sections); set('Метод оплати', lists.methods); set('Закрита', lists.closed);
+    set('Розділ', lists.sections); set('Метод оплати', lists.methods); set('Закрита', lists.closed); set('Виконавцю виплачено', lists.closed);
   } else if (name === SHEETS.operations) {
     set('Тип', lists.types); set('Статус', lists.statuses); set('Рахунок', lists.accounts); set('На рахунок', lists.accounts);
     set('Категорія', lists.categories); set('Виконавець', lists.members);

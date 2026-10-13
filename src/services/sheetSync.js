@@ -21,7 +21,7 @@ const PSTATUS_IN = inv(PSTATUS_UA);
 export const OPERATION_COLUMNS = ['ID', 'Дата', 'Тип', 'Статус', 'Сума', 'Валюта', 'Рахунок', 'На рахунок', 'Категорія', 'Проєкт', 'Клієнт', 'Виконавець', 'Коментар', 'Сума в базі'];
 export const PROJECT_COLUMNS = ['ID', 'Назва', 'Клієнт', 'Статус', 'Тип роботи', 'Бюджет', 'Валюта', 'Оплачено (база)', 'Борг (база)', 'Прибуток (база)', 'Початок', 'Дедлайн', 'Спосіб оплати', 'Нотатки'];
 export const DEAL_COLUMNS = ['ID', 'Розділ', 'Виконавець', 'Замовник', 'Тип роботи', 'Завдання', 'Дата початку', 'Дата завершення', 'Метод оплати',
-  'Передоплата', 'Передоплата прог.', 'Ціна', 'Маржа', 'доп послуга, ціна, число оплати', 'Закрита', 'Виконавцю всього', 'Замовник винен', 'Виконавцю ще'];
+  'Передоплата', 'Передоплата прог.', 'Ціна', 'Маржа', 'доп послуга, ціна, число оплати', 'Закрита', 'Виконавцю виплачено', 'Виконавцю всього', 'Замовник винен', 'Виконавцю ще'];
 const READONLY = new Set(['Сума в базі', 'Оплачено (база)', 'Борг (база)', 'Прибуток (база)', 'Валюта', 'Виконавцю всього', 'Замовник винен', 'Виконавцю ще']);
 
 /** Сума як у таблиці: «5000грн», «74$». */
@@ -37,7 +37,7 @@ function dealRow(d) {
   return [
     d.id, d.section, d.executor, d.client, d.type, d.task, isoToSheet(d.start_date), isoToSheet(d.end_date), d.method,
     sheetMoney(d.prepay, d.prepay_currency), sheetMoney(d.prog_prepay, d.prog_currency), sheetMoney(d.price, d.currency),
-    d.margin === null ? '' : sheetMoney(d.margin, d.margin_currency), d.extra || '', d.closed ? 'так' : 'ні',
+    d.margin === null ? '' : sheetMoney(d.margin, d.margin_currency), d.extra || '', d.closed ? 'так' : 'ні', d.executor_paid ? 'так' : 'ні',
     sheetMoney(c.executor_total, c.currency), sheetMoney(c.client_left, c.currency), sheetMoney(c.executor_left, c.currency),
   ];
 }
@@ -174,6 +174,7 @@ export function upsertRow(sheet, cols, values) {
       method: r['Метод оплати'], prepay: String(r['Передоплата'] ?? ''), prog: String(r['Передоплата прог.'] ?? ''),
       price: String(r['Ціна'] ?? ''), margin: String(r['Маржа'] ?? ''), extra: r['доп послуга, ціна, число оплати'],
       closed: /^(так|yes|true|1|✅|закрит)/i.test(String(r['Закрита'] ?? '').trim()),
+      executor_paid: /^(так|yes|true|1|✅|виплач)/i.test(String(r['Виконавцю виплачено'] ?? '').trim()),
     };
     const exists = id && getDeal(id);
     const d = saveDeal(input, SYSTEM, { id: exists ? id : null });

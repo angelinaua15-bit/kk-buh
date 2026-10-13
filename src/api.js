@@ -398,6 +398,7 @@ api.patch('/deals/:id', guard(can.writeRefs), (req, res) => {
     section: cur.section, executor: cur.executor, client: cur.client, type: cur.type, task: cur.task, start: cur.start_date, end: cur.end_date,
     method: cur.method, price: money(cur.price, cur.currency), prepay: money(cur.prepay, cur.prepay_currency), prog: money(cur.prog_prepay, cur.prog_currency),
     margin: cur.margin === null ? '' : money(cur.margin, cur.margin_currency), extra: cur.extra, closed: cur.closed,
+    executor_paid: cur.executor_paid,
   };
   const d = saveDeal({ ...base, ...req.body }, req.user, { id });
   audit(req.user.id, 'update', 'deal', id, req.body);

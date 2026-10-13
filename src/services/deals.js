@@ -109,7 +109,8 @@ export function calcDeal(d, rates = rateMap()) {
     executor_total: executorTotal,
     extras,
     client_left: closed ? 0 : Math.max(0, price - prepay),
-    executor_left: closed ? 0 : Math.max(0, executorTotal - prog),
+    executor_left: closed || d.executor_paid ? 0 : Math.max(0, executorTotal - prog),
+    executor_paid: closed || Boolean(d.executor_paid),
     // маржа рівно як у таблиці (у своїй валюті) — для підсумків
     margin_original: d.margin !== null && d.margin !== undefined
       ? { amount: d.margin, currency: d.margin_currency || cur }
@@ -201,6 +202,7 @@ export function normalizeDeal(input, { year } = {}) {
     extra: extraText || null,
     extras: parseExtras(extraText, y),
     closed: input.closed === true || input.closed === 1 || input.closed === '1' || /^(так|yes|true|закрито|оплачено|✅)$/i.test(norm(input.closed)),
+    executor_paid: input.executor_paid === true || input.executor_paid === 1 || input.executor_paid === '1' || /^(так|yes|true|виплачено|✅)$/i.test(norm(input.executor_paid)),
     note,
   };
 }
@@ -243,7 +245,7 @@ function writeDealTransactions(projectId, d, calc, memberId, clientId, user) {
   if (memberId) {
     const progAcc = d.prog_prepay ? toAcc(d.prog_prepay, d.prog_currency) : 0;
     const totalAcc = toAcc(calc.executor_total, calc.currency);
-    if (d.closed) {
+    if (d.closed || d.executor_paid) {
       const paid = Math.min(progAcc, totalAcc);
       add('prog', 'expense', paid, startDate, `Передоплата виконавцю · ${d.executor}`);
       add('prog_final', 'expense', totalAcc - paid, endDate, `Виплата виконавцю · ${d.executor}`);
@@ -270,16 +272,17 @@ export function saveDeal(input, user, { id = null, key = null, year } = {}) {
     const fields = [
       d.task, clientId, status, d.price, d.price_currency, d.start_date, d.end_date, notes, d.type || null, d.method || null,
       d.section, memberId, d.margin, d.margin_currency, d.prepay, d.prepay_currency, d.prog_prepay, d.prog_currency, d.extra, d.closed ? 1 : 0,
+      d.executor_paid || d.closed ? 1 : 0,
     ];
     if (pid) {
       if (!get('SELECT id FROM projects WHERE id=?', pid)) throw new HttpError(404, 'Угоду не знайдено');
       run(`UPDATE projects SET name=?, client_id=?, status=?, budget=?, currency=?, start_date=?, deadline=?, notes=?, work_type=?, payment_method=?,
-           section=?, executor_id=?, margin=?, margin_currency=?, prepay=?, prepay_currency=?, prog_prepay=?, prog_currency=?, extra=?, closed=? WHERE id=?`,
+           section=?, executor_id=?, margin=?, margin_currency=?, prepay=?, prepay_currency=?, prog_prepay=?, prog_currency=?, extra=?, closed=?, executor_paid=? WHERE id=?`,
       ...fields, pid);
     } else {
       pid = Number(run(`INSERT INTO projects(name, client_id, status, budget, currency, start_date, deadline, notes, work_type, payment_method,
-           section, executor_id, margin, margin_currency, prepay, prepay_currency, prog_prepay, prog_currency, extra, closed, deal_key)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, ...fields, key).lastInsertRowid);
+           section, executor_id, margin, margin_currency, prepay, prepay_currency, prog_prepay, prog_currency, extra, closed, executor_paid, deal_key)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, ...fields, key).lastInsertRowid);
     }
     // ставка виконавця для розділу «Виплати команді» — фіксована сума угоди
     run('DELETE FROM project_members WHERE project_id = ?', pid);
@@ -307,7 +310,7 @@ function shape(p, rates) {
   const d = {
     price: p.budget, price_currency: p.currency, prepay: p.prepay, prepay_currency: p.prepay_currency,
     prog_prepay: p.prog_prepay, prog_currency: p.prog_currency, margin: p.margin, margin_currency: p.margin_currency,
-    closed: p.closed, start_date: p.start_date, end_date: p.deadline,
+    closed: p.closed, executor_paid: p.executor_paid, start_date: p.start_date, end_date: p.deadline,
     extras: parseExtras(p.extra, Number((p.start_date || today()).slice(0, 4))),
   };
   const c = calcDeal(d, rates);
@@ -333,6 +336,7 @@ function shape(p, rates) {
     margin_currency: p.margin_currency,
     extra: p.extra || '',
     closed: Boolean(p.closed),
+    executor_paid: Boolean(p.executor_paid || p.closed),
     status: p.status,
     calc: c,
   };

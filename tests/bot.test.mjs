@@ -165,7 +165,7 @@ await test('template tap creates tx', async () => {
 
 await test('deal wizard asks every column of the sheet and saves a deal', async () => {
   sent.length = 0;
-  await text(111, '🤝 Нова угода');
+  await text(111, '➕ Новий проєкт');
   const tapOpt = async (label) => {
     const btn = (lastReply().payload.reply_markup?.inline_keyboard || []).flat().find((b) => b.text.startsWith(label));
     assert.ok(btn, `no button «${label}» in: ${lastReply().payload.text}`);
@@ -203,8 +203,10 @@ await test('deal wizard asks every column of the sheet and saves a deal', async 
   await tapOpt('Пропустити');
   assert.match(lastReply().payload.text, /закрита/);
   await tapOpt('⏳');
+  assert.match(lastReply().payload.text, /Виконавцю вже виплачено/);
+  await tapOpt('Ні, ще винні');
   const card = lastReply().payload.text;
-  assert.match(card, /Перевір угоду/);
+  assert.match(card, /Перевір проєкт/);
   assert.match(card, /Виконавцю всього: 6\s?000 ₴/);
   assert.match(card, /замовник винен 6\s?000 ₴/);
   await tapOpt('✅ Зберегти');
@@ -212,7 +214,7 @@ await test('deal wizard asks every column of the sheet and saves a deal', async 
   assert.ok(p && p.section === 'Розробки' && p.closed === 0);
   // закрити з бота
   sent.length = 0;
-  await text(111, '📋 Угоди');
+  await text(111, '📋 Проєкти');
   const close = sent.flatMap((x) => (x.payload.reply_markup?.inline_keyboard || []).flat()).find((b) => b.callback_data === `dclose:${p.id}`);
   assert.ok(close, 'close button');
   await tap(111, close.callback_data);
@@ -224,7 +226,7 @@ await test('/summary and member deals', async () => {
   await text(111, '/summary');
   assert.match(lastReply().payload.text, /Підсумки/);
   sent.length = 0;
-  await text(333, '🤝 Нова угода');
+  await text(333, '➕ Новий проєкт');
   assert.match(lastReply().payload.text, /адмін або фінансист/);
 });
 
