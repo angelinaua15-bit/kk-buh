@@ -17,6 +17,7 @@ import {
 import { createDocument, listDocuments, renderDocument, requisites, saveRequisites } from './services/documents.js';
 import { linkMonoAccount, makeBackup, monoAccounts, monoEnabled, setMonoWebhook, syncMono } from './services/integrations.js';
 import { aiEnabled } from './services/ai.js';
+import { METHODS, SECTIONS, dealBalances, deleteDeal, getDeal, importSnapshot, listDeals, monthlySummary, saveDeal } from './services/deals.js';
 
 const api = Router();
 const guard = (check, msg = 'Недостатньо прав') => (req, res, next) => (check(req.user) ? next() : res.status(403).json({ error: msg }));
@@ -308,11 +309,12 @@ api.get('/settings', guard(can.manageSettings), (req, res) => {
     member_needs_approval: getSetting('member_needs_approval') === '1',
     notify_new_tx: getSetting('notify_new_tx') === '1',
     daily_digest: getSetting('daily_digest') === '1',
+    summary_by: getSetting('summary_by', 'end'),
   });
 });
 api.post('/settings', guard(can.manageSettings), (req, res) => {
   for (const [k, v] of Object.entries(req.body || {})) {
-    if (['company_name', 'base_currency', 'member_sees_all', 'member_needs_approval', 'notify_new_tx', 'daily_digest'].includes(k)) {
+    if (['company_name', 'base_currency', 'member_sees_all', 'member_needs_approval', 'notify_new_tx', 'daily_digest', 'summary_by'].includes(k)) {
       setSetting(k, typeof v === 'boolean' ? (v ? '1' : '0') : v);
     }
   }
@@ -354,6 +356,64 @@ api.post('/export/send', async (req, res) => {
   const buf = await buildWorkbook({ from, to, user: req.user });
   await sendToChat(req.user, Buffer.from(buf), `KKLab_${from}_${to}.xlsx`, `📊 Звіт ${from} — ${to}`);
   res.json({ ok: true });
+});
+
+/* ───── Угоди (як у таблиці «KING KONG LAB ПРОЄКТИ») ───── */
+const MONEY_DEAL = ['price', 'prepay', 'prog_prepay', 'margin', 'calc'];
+function visibleDeal(user, d) {
+  if (can.seeAll(user)) return d;
+  if (d.executor_id !== user.id) return null;
+  const o = { ...d, limited: true };
+  for (const k of MONEY_DEAL) delete o[k];
+  o.my = { total: d.calc.executor_total, paid: d.prog_prepay, left: d.calc.executor_left, currency: d.calc.currency };
+  return o;
+}
+api.get('/deals/meta', (req, res) => res.json({
+  sections: SECTIONS,
+  methods: METHODS,
+  executors: all("SELECT DISTINCT u.id, u.name FROM users u JOIN projects p ON p.executor_id = u.id ORDER BY u.name"),
+  types: all("SELECT work_type AS name, COUNT(*) AS n FROM projects WHERE work_type IS NOT NULL AND work_type != '' GROUP BY lower(work_type) ORDER BY n DESC LIMIT 20").map((r) => r.name),
+  summary_by: getSetting('summary_by', 'end'),
+}));
+api.get('/deals/summary', seeAll, (req, res) => res.json(monthlySummary(Number(req.query.year) || Number(today().slice(0, 4)), req.query.by === 'start' || req.query.by === 'end' ? req.query.by : undefined)));
+api.get('/deals/balances', seeAll, (req, res) => res.json(dealBalances()));
+api.get('/deals', (req, res) => res.json(listDeals({ section: req.query.section || '', status: req.query.status || '', q: req.query.q || '' }).map((d) => visibleDeal(req.user, d)).filter(Boolean)));
+api.get('/deals/:id', (req, res) => {
+  const d = getDeal(needId(req));
+  const v = d && visibleDeal(req.user, d);
+  if (!v) return res.status(404).json({ error: 'Не знайдено' });
+  res.json(v);
+});
+api.post('/deals', guard(can.writeRefs), (req, res) => {
+  const d = saveDeal(req.body || {}, req.user);
+  audit(req.user.id, 'create', 'deal', d.id, req.body);
+  res.status(201).json(d);
+});
+api.patch('/deals/:id', guard(can.writeRefs), (req, res) => {
+  const id = needId(req);
+  const cur = getDeal(id);
+  if (!cur) return res.status(404).json({ error: 'Не знайдено' });
+  const money = (v, c) => (v === null || v === undefined ? '' : { amount: v, currency: c });
+  const base = {
+    section: cur.section, executor: cur.executor, client: cur.client, type: cur.type, task: cur.task, start: cur.start_date, end: cur.end_date,
+    method: cur.method, price: money(cur.price, cur.currency), prepay: money(cur.prepay, cur.prepay_currency), prog: money(cur.prog_prepay, cur.prog_currency),
+    margin: cur.margin === null ? '' : money(cur.margin, cur.margin_currency), extra: cur.extra, closed: cur.closed,
+  };
+  const d = saveDeal({ ...base, ...req.body }, req.user, { id });
+  audit(req.user.id, 'update', 'deal', id, req.body);
+  res.json(d);
+});
+api.delete('/deals/:id', guard(can.writeRefs), (req, res) => {
+  deleteDeal(needId(req));
+  audit(req.user.id, 'delete', 'deal', Number(req.params.id));
+  res.json({ ok: true });
+});
+api.post('/deals/import-snapshot', guard(can.manageSettings), async (req, res) => {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const { ROOT } = await import('./config.js');
+  const snap = JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'kk-deals-2026.json'), 'utf8'));
+  res.json(importSnapshot(snap, req.user));
 });
 
 /* ───── Шаблони ───── */

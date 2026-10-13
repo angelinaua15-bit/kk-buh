@@ -163,6 +163,71 @@ await test('template tap creates tx', async () => {
   assert.equal(tx.amount, 1500000);
 });
 
+await test('deal wizard asks every column of the sheet and saves a deal', async () => {
+  sent.length = 0;
+  await text(111, '🤝 Нова угода');
+  const tapOpt = async (label) => {
+    const btn = (lastReply().payload.reply_markup?.inline_keyboard || []).flat().find((b) => b.text.startsWith(label));
+    assert.ok(btn, `no button «${label}» in: ${lastReply().payload.text}`);
+    assert.ok(Buffer.byteLength(btn.callback_data) <= 64, 'callback_data ≤ 64 bytes');
+    await tap(111, btn.callback_data);
+  };
+  await tapOpt('Розробки');
+  assert.match(lastReply().payload.text, /Виконавець/);
+  await text(111, 'Роман розробка');
+  assert.match(lastReply().payload.text, /Замовник/);
+  await text(111, '@wizardclient');
+  assert.match(lastReply().payload.text, /Тип роботи/);
+  await text(111, 'Бот тг');
+  assert.match(lastReply().payload.text, /Завдання/);
+  await text(111, 'Бот для замовлень');
+  assert.match(lastReply().payload.text, /Дата початку/);
+  await text(111, '01.10');
+  assert.match(lastReply().payload.text, /Дата завершення/);
+  await tapOpt('Пропустити');
+  assert.match(lastReply().payload.text, /Метод оплати/);
+  await tapOpt('ФОП');
+  assert.match(lastReply().payload.text, /Ціна/);
+  await text(111, 'дорого');
+  assert.match(lastReply().payload.text, /Напиши суму/);
+  await text(111, '12000 грн');
+  assert.match(lastReply().payload.text, /Передоплата від замовника/);
+  await text(111, '6000');
+  assert.match(lastReply().payload.text, /Передоплата прог/);
+  await text(111, '2000 грн');
+  assert.match(lastReply().payload.text, /Маржа/);
+  await text(111, '20000 грн');
+  assert.match(lastReply().payload.text, /не може бути більшою/);
+  await text(111, '6000 грн');
+  assert.match(lastReply().payload.text, /Доп\. послуга/);
+  await tapOpt('Пропустити');
+  assert.match(lastReply().payload.text, /закрита/);
+  await tapOpt('⏳');
+  const card = lastReply().payload.text;
+  assert.match(card, /Перевір угоду/);
+  assert.match(card, /Виконавцю всього: 6\s?000 ₴/);
+  assert.match(card, /замовник винен 6\s?000 ₴/);
+  await tapOpt('✅ Зберегти');
+  const p = get("SELECT * FROM projects WHERE name = 'Бот для замовлень'");
+  assert.ok(p && p.section === 'Розробки' && p.closed === 0);
+  // закрити з бота
+  sent.length = 0;
+  await text(111, '📋 Угоди');
+  const close = sent.flatMap((x) => (x.payload.reply_markup?.inline_keyboard || []).flat()).find((b) => b.callback_data === `dclose:${p.id}`);
+  assert.ok(close, 'close button');
+  await tap(111, close.callback_data);
+  assert.equal(get('SELECT closed FROM projects WHERE id=?', p.id).closed, 1);
+});
+
+await test('/summary and member deals', async () => {
+  sent.length = 0;
+  await text(111, '/summary');
+  assert.match(lastReply().payload.text, /Підсумки/);
+  sent.length = 0;
+  await text(333, '🤝 Нова угода');
+  assert.match(lastReply().payload.text, /адмін або фінансист/);
+});
+
 await test('HTML in names is escaped', async () => {
   run("UPDATE accounts SET name = 'Mono <b>x</b> & co' WHERE id = 1");
   await text(111, '💼 Баланс');

@@ -440,6 +440,8 @@ async function renderMore() {
       ['taxes', '🧾 Податки ФОП'],
       ['payouts', '👥 Виплати команді'],
       ['profit', '💹 Прибутковість'],
+      ['summary', '📊 Підсумки по місяцях'],
+      ['projects', 'Проєкти (усі)'],
       ['clients', 'Клієнти'],
       ['team', 'Команда'],
       ['pnl', 'P&L за рік'],
@@ -652,6 +654,7 @@ async function renderSettings() {
     <label class="switch">Команда бачить усі операції <input type="checkbox" name="member_sees_all" ${s.member_sees_all?'checked':''}></label>
     <label class="switch">Операції команди на перевірку <input type="checkbox" name="member_needs_approval" ${s.member_needs_approval?'checked':''}></label>
     <label class="switch">Ранковий дайджест адміну <input type="checkbox" name="daily_digest" ${s.daily_digest?'checked':''}></label>
+    <label>Підсумки місяця рахувати<select name="summary_by"><option value="end" ${s.summary_by!=='start'?'selected':''}>за датою завершення угоди</option><option value="start" ${s.summary_by==='start'?'selected':''}>за датою початку</option></select></label>
     <button class="btn">Зберегти</button>
     <button type="button" class="btn ghost" id="nbu">Оновити курси НБУ</button>
     <button type="button" class="btn ghost" id="backupBtn">💾 Бекап бази в чат</button>
@@ -862,11 +865,146 @@ async function renderSheet() {
     </div>`;
 }
 
+/* ───────────── Угоди (як у таблиці) ───────────── */
+const SECTIONS_UI = ['Розробки', 'Реклама', 'Seo / Ads', 'Дизайн', 'Інше'];
+const CUR_OPTS = ['UAH', 'USD', 'USDT', 'EUR'];
+const mo = (v) => (v && typeof v === 'object' ? v : null);
+
+async function renderDeals() {
+  state.dealF = state.dealF || { section: '', status: '' };
+  const f = state.dealF;
+  const q = new URLSearchParams({ section: f.section, status: f.status, q: f.q || '' });
+  const [rows, bal] = await Promise.all([api('/deals?' + q), state.me.can.writeRefs || state.me.user.role === 'viewer' ? api('/deals/balances').catch(() => null) : null]);
+  const chip = (act, v, label, on) => `<button class="chip ${on ? 'on' : ''}" data-act="${act}" data-v="${esc(v)}">${label}</button>`;
+  view().innerHTML = `<div class="row"><h1>Угоди</h1><div>${bal ? '<button class="chip" data-more="summary">📊 Підсумки</button> ' : ''}${state.me.can.writeRefs ? '<button class="chip" data-act="new-deal">+ Угода</button>' : ''}</div></div>
+    ${bal ? `<div class="kpis">
+      <div class="kpi"><div class="l">В роботі</div><div class="v">${bal.open}</div></div>
+      <div class="kpi"><div class="l">Замовники винні</div><div class="v minus">${money(bal.clients_owe_uah, 'UAH')}</div></div>
+      <div class="kpi wide"><div class="l">Виконавцям ще виплатити</div><div class="v">${money(bal.we_owe_executors_uah, 'UAH')}</div></div>
+    </div>` : ''}
+    <div class="filters">${chip('dsec', '', 'Усі', !f.section)}${SECTIONS_UI.map((x) => chip('dsec', x, x, f.section === x)).join('')}</div>
+    <div class="filters">${chip('dst', '', 'Усі', !f.status)}${chip('dst', 'open', '⏳ В роботі', f.status === 'open')}${chip('dst', 'closed', '✅ Закриті', f.status === 'closed')}</div>
+    <input class="deal-search" id="dealSearch" placeholder="Пошук: замовник, виконавець, завдання…" value="${esc(f.q || '')}">
+    ${rows.map(dealCard).join('') || '<div class="empty">Немає угод</div>'}`;
+  const inp = $('dealSearch');
+  inp.oninput = () => { clearTimeout(renderDeals.t); renderDeals.t = setTimeout(() => { f.q = inp.value.trim(); renderDeals().then(() => { const x = $('dealSearch'); x.focus(); x.setSelectionRange(x.value.length, x.value.length); }); }, 300); };
+}
+
+function dealCard(d) {
+  const st = d.closed ? '<span class="tag green">✅ закрита</span>' : '<span class="tag amber">⏳ в роботі</span>';
+  if (d.limited) {
+    return `<div class="card deal"><div class="row"><b>${esc(d.task)}</b>${st}</div>
+      <div class="muted">${esc(d.section)} · ${esc(d.client)} · ${d.start_date || ''}${d.end_date ? ' → ' + d.end_date : ''}</div>
+      <div class="row"><span>Мені за угоду</span><b>${money(d.my.total, d.my.currency)}</b></div>
+      <div class="row"><span class="muted">Отримано ${money(d.my.paid, d.my.currency)}</span><span class="muted">Залишок ${money(d.my.left, d.my.currency)}</span></div></div>`;
+  }
+  const c = d.calc;
+  return `<div class="card deal" data-deal="${d.id}">
+    <div class="row"><b>${esc(d.task)}</b>${st}</div>
+    <div class="muted">${esc(d.section)} · ${esc(d.type || '')} · ${d.start_date || '—'}${d.end_date ? ' → ' + d.end_date : ''} · ${esc(d.method || '')}</div>
+    <div class="deal-grid">
+      <span><small>Замовник</small>${esc(d.client || '—')}</span>
+      <span><small>Виконавець</small>${esc(d.executor || '—')}</span>
+      <span><small>Ціна</small><b>${money(d.price, d.currency)}</b></span>
+      <span><small>Маржа</small><b class="plus">${money(c.margin_original.amount, c.margin_original.currency)}</b></span>
+      <span><small>Передоплата</small>${money(d.prepay, d.prepay_currency)}</span>
+      <span><small>Передоплата прог.</small>${money(d.prog_prepay, d.prog_currency)}</span>
+    </div>
+    ${!d.closed && (c.client_left || c.executor_left) ? `<div class="row sub"><span>Замовник винен <b class="minus">${money(c.client_left, c.currency)}</b></span><span>Виконавцю ще <b>${money(c.executor_left, c.currency)}</b></span></div>` : ''}
+    ${d.extra ? `<div class="muted">➕ ${esc(d.extra)}</div>` : ''}
+  </div>`;
+}
+
+async function openDeal(id) {
+  const [d, meta] = await Promise.all([id ? api('/deals/' + id) : Promise.resolve({}), api('/deals/meta')]);
+  const val = (amount, cur) => (amount || amount === 0) && amount !== null ? amount / 100 : '';
+  const curSel = (name, cur) => `<select name="${name}">${CUR_OPTS.map((c) => `<option ${ (cur || 'UAH') === c ? 'selected' : ''}>${c}</option>`).join('')}</select>`;
+  const list = (idn, arr) => `<datalist id="${idn}">${arr.map((x) => `<option value="${esc(x)}">`).join('')}</datalist>`;
+  const clients = (state.boot.clients || []).map((c) => c.name);
+  const people = [...new Set([...(meta.executors || []).map((x) => x.name), ...(state.boot.members || []).map((m) => m.name)])];
+  const mCur = d.margin_currency || d.currency;
+  openModal(`<div class="handle"></div><h3>${d.id ? 'Угода' : 'Нова угода'}</h3>
+    <form class="form" id="dealForm">
+      <label>Розділ<select name="section">${meta.sections.map((x) => `<option ${ (d.section || state.dealF?.section || 'Розробки') === x ? 'selected' : ''}>${x}</option>`).join('')}</select></label>
+      <label>Виконавець<input name="executor" list="dlPeople" value="${esc(d.executor || '')}" placeholder="хто робить"></label>${list('dlPeople', people)}
+      <label>Замовник<input name="client" list="dlClients" value="${esc(d.client || '')}" placeholder="@username або імʼя"></label>${list('dlClients', clients)}
+      <label>Тип роботи<input name="type" list="dlTypes" value="${esc(d.type || '')}"></label>${list('dlTypes', meta.types || [])}
+      <label>Завдання<input name="task" required value="${esc(d.task || '')}"></label>
+      <div class="two"><label>Дата початку<input name="start" type="date" value="${d.start_date || today()}"></label>
+      <label>Дата завершення<input name="end" type="date" value="${d.end_date || ''}"></label></div>
+      <label>Метод оплати<select name="method">${['', ...meta.methods].map((x) => `<option ${ (d.method || '') === x ? 'selected' : ''} value="${x}">${x || '—'}</option>`).join('')}</select></label>
+      <div class="money"><label>Ціна<input name="price" type="number" step="0.01" min="0" required value="${val(d.price)}"></label>${curSel('price_cur', d.currency)}</div>
+      <div class="money"><label>Передоплата<input name="prepay" type="number" step="0.01" min="0" value="${val(d.prepay)}"></label>${curSel('prepay_cur', d.prepay_currency || d.currency)}</div>
+      <div class="money"><label>Передоплата прог.<input name="prog" type="number" step="0.01" min="0" value="${val(d.prog_prepay)}"></label>${curSel('prog_cur', d.prog_currency || d.currency)}</div>
+      <div class="money"><label>Маржа<input name="margin" type="number" step="0.01" min="0" value="${d.margin === null || d.margin === undefined ? '' : d.margin / 100}" placeholder="авто: ціна − передоплата прог."></label>${curSel('margin_cur', mCur)}</div>
+      <label>Доп. послуга, ціна, число оплати<input name="extra" value="${esc(d.extra || '')}" placeholder="плюс 600 грн 10.03"></label>
+      <label class="switch">✅ Закрита й повністю оплачена <input type="checkbox" name="closed" ${d.closed ? 'checked' : ''}></label>
+      <div class="card calc" id="dealCalc"></div>
+      <button class="btn">${d.id ? 'Зберегти' : 'Додати угоду'}</button>
+      ${d.id ? '<button type="button" class="btn danger" data-act="del-deal">Видалити угоду</button>' : ''}
+    </form>`, (el) => {
+    const form = el.querySelector('#dealForm');
+    const num = (n) => Math.round(Number(String(form[n].value || 0).replace(',', '.')) * 100) || 0;
+    const recalc = () => {
+      const cur = form.price_cur.value;
+      const price = num('price');
+      const prepay = form.prepay_cur.value === cur ? num('prepay') : null;
+      const prog = form.prog_cur.value === cur ? num('prog') : null;
+      const marginSet = form.margin.value !== '';
+      const margin = marginSet ? (form.margin_cur.value === cur ? num('margin') : null) : (prog === null ? null : price - prog);
+      const execTotal = margin === null ? null : Math.max(0, price - margin);
+      const closed = form.closed.checked;
+      el.querySelector('#dealCalc').innerHTML = `
+        <div class="row"><span>Маржа${marginSet ? '' : ' (авто)'}</span><b class="plus">${margin === null ? 'у іншій валюті' : money(margin, cur)}</b></div>
+        <div class="row"><span>Виконавцю всього</span><b>${execTotal === null ? '—' : money(execTotal, cur)}</b></div>
+        <div class="row"><span>Замовник ще винен</span><b class="minus">${closed ? money(0, cur) : prepay === null ? '—' : money(Math.max(0, price - prepay), cur)}</b></div>
+        <div class="row"><span>Виконавцю ще виплатити</span><b>${closed ? money(0, cur) : execTotal === null || prog === null ? '—' : money(Math.max(0, execTotal - prog), cur)}</b></div>`;
+    };
+    form.addEventListener('input', recalc);
+    recalc();
+    form.onsubmit = (e) => safe(async () => {
+      e.preventDefault();
+      const m = (n, c) => (form[n].value === '' ? '' : { amount: num(n), currency: form[c].value });
+      const body = {
+        section: form.section.value, executor: form.executor.value, client: form.client.value, type: form.type.value, task: form.task.value,
+        start: form.start.value || '', end: form.end.value || '', method: form.method.value,
+        price: m('price', 'price_cur'), prepay: m('prepay', 'prepay_cur') || { amount: 0, currency: form.price_cur.value },
+        prog: m('prog', 'prog_cur') || { amount: 0, currency: form.price_cur.value }, margin: m('margin', 'margin_cur'),
+        extra: form.extra.value, closed: form.closed.checked,
+      };
+      if (d.id) await api('/deals/' + d.id, { method: 'PATCH', body });
+      else await api('/deals', { method: 'POST', body });
+      closeModal(); toast('Збережено'); state.boot = await api('/bootstrap'); refresh();
+    });
+    el.querySelector('[data-act=del-deal]')?.addEventListener('click', () => safe(async () => {
+      if (!(await ask('Видалити угоду разом з її оплатами?'))) return;
+      await api('/deals/' + d.id, { method: 'DELETE' });
+      closeModal(); toast('Видалено'); refresh();
+    }));
+  });
+}
+
+async function renderSummary() {
+  const year = Number(state.sumYear || state.month.slice(0, 4));
+  const by = state.sumBy || '';
+  const s = await api(`/deals/summary?year=${year}${by ? '&by=' + by : ''}`);
+  const cols = [...s.sections, 'Прибуток'];
+  const cell = (n) => (n ? money(n, 'UAH').replace(/\s/g, '\u00a0') : '');
+  const MONTHS = ['січень', 'лютий', 'березень', 'квітень', 'травень', 'червень', 'липень', 'серпень', 'вересень', 'жовтень', 'листопад', 'грудень'];
+  view().innerHTML = `<div class="row"><h1>Підсумки ${year}</h1><div><button class="chip" data-act="sy" data-d="-1">‹</button><button class="chip" data-act="sy" data-d="1">›</button></div></div>
+    <div class="filters"><button class="chip ${s.by === 'end' ? 'on' : ''}" data-act="sby" data-v="end">за датою завершення</button><button class="chip ${s.by === 'start' ? 'on' : ''}" data-act="sby" data-v="start">за датою початку</button></div>
+    <div class="card" style="overflow:auto"><table class="table sum"><tr><th></th>${cols.map((c) => `<th>${c}</th>`).join('')}</tr>
+      ${s.months.map((m, i) => `<tr><td>${MONTHS[i]}</td>${cols.map((c) => `<td class="${c === 'Прибуток' ? 'tot' : ''}">${cell(s.table[m][c])}</td>`).join('')}</tr>`).join('')}
+      <tr><td><b>Разом</b></td>${cols.map((c) => `<td><b>${cell(s.totals[c])}</b></td>`).join('')}</tr></table></div>
+    <p class="muted">Маржа угод по розділах, у гривнях. Долар — за курсом ${s.usd_rate} (Ще → Налаштування → курси). Рахується автоматично з угод.</p>`;
+}
+
 const screens = {
   dash: renderDash, tx: renderTx, projects: renderProjects, more: renderMore,
   clients: renderClients, team: renderTeam, pnl: renderPnl, upcoming: renderUpcoming,
   users: renderUsers, settings: renderSettings, audit: renderAudit, recurring: renderRecurring,
   import: renderImport,
+  deals: renderDeals, summary: renderSummary,
   templates: renderTemplates, debts: renderDebts, forecast: renderForecast, taxes: renderTaxes,
   payouts: renderPayouts, profit: renderProfit, requisites: renderRequisites, mono: renderMono, sheet: renderSheet,
   accounts: renderAccounts, categories: renderCategories,
@@ -919,6 +1057,17 @@ document.body.addEventListener('click', async (e) => {
   if (catCard) return openCategory(JSON.parse(catCard.dataset.cat));
   const recCard = e.target.closest('[data-rec]');
   if (recCard) return openRecurring(JSON.parse(recCard.dataset.rec));
+  const ds = e.target.closest('[data-act=dsec]');
+  if (ds) { state.dealF.section = ds.dataset.v; return refresh(); }
+  const dst = e.target.closest('[data-act=dst]');
+  if (dst) { state.dealF.status = dst.dataset.v; return refresh(); }
+  if (e.target.closest('[data-act=new-deal]')) return openDeal();
+  const dealEl = e.target.closest('[data-deal]');
+  if (dealEl && state.me.can.writeRefs) return openDeal(Number(dealEl.dataset.deal));
+  const sy = e.target.closest('[data-act=sy]');
+  if (sy) { state.sumYear = Number(state.sumYear || state.month.slice(0, 4)) + Number(sy.dataset.d); return refresh(); }
+  const sby = e.target.closest('[data-act=sby]');
+  if (sby) { state.sumBy = sby.dataset.v; return refresh(); }
   const tplBtn = e.target.closest('[data-tpl]');
   if (tplBtn) return safe(async () => { const t = await api(`/templates/${tplBtn.dataset.tpl}/use`, { method: 'POST', body: {} }); toast(t.status === 'pending' ? 'Записано · на перевірці' : 'Записано'); refresh(); });
   const tplEdit = e.target.closest('[data-tpl-edit]');
@@ -996,6 +1145,7 @@ document.body.addEventListener('submit', async (e) => {
     member_sees_all: fd.get('member_sees_all') === 'on',
     member_needs_approval: fd.get('member_needs_approval') === 'on',
     daily_digest: fd.get('daily_digest') === 'on',
+    summary_by: fd.get('summary_by'),
   }});
   toast('Збережено');
   } catch (err) { toast(err.message); }

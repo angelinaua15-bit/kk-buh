@@ -155,3 +155,17 @@ ol.muted { padding-left: 18px; line-height: 1.6; }
 .bars span > i { display: block; width: 100%; }
 .form label.switch { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 14px; color: var(--text); }
 .form label.switch input { width: 20px; height: 20px; flex: none; }
+
+/* угоди */
+.deal { display: grid; gap: 6px; }
+.deal-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; margin-top: 4px; }
+.deal-grid span { display: grid; font-size: 14px; overflow-wrap: anywhere; }
+.deal-grid small { color: var(--muted); font-size: 11px; }
+.deal-search { width: 100%; background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 11px 14px; margin-bottom: 10px; }
+.tag.amber { background: rgba(251,191,36,.15); color: #FDE68A; }
+.form .two { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.form .money { display: grid; grid-template-columns: 1fr 86px; gap: 8px; align-items: end; }
+.form .money select { height: 44px; }
+.calc .row { padding: 4px 0; }
+.table.sum td.tot { color: var(--green); }
+.filters { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }

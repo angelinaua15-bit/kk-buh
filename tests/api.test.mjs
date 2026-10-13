@@ -95,11 +95,11 @@ try {
   });
 
   await test('plan payouts → planned tx, due becomes 0, no duplicates on 2nd run', async () => {
-    const r = await ok('POST', '/payouts/plan', { account_id: acc['Готівка $'].id });
+    const r = await ok('POST', '/payouts/plan', { account_id: acc['Готівка $'].id, user_ids: [member.id] });
     assert.equal(r.created, 1);
     const p = await ok('GET', '/payouts');
     assert.equal(p.people.find((x) => x.user_id === member.id).due, 0);
-    const r2 = await ok('POST', '/payouts/plan', { account_id: acc['Готівка $'].id });
+    const r2 = await ok('POST', '/payouts/plan', { account_id: acc['Готівка $'].id, user_ids: [member.id] });
     assert.equal(r2.created, 0);
   });
 
@@ -244,6 +244,60 @@ try {
     assert.equal((await sync('POST', '/sync/remove', { sheet: 'operations', id })).status, 200);
     const t = await call('GET', `/transactions/${id}`);
     assert.equal(t.status, 404);
+  });
+
+  await test('deals: sheet snapshot imported on start, API CRUD, summary, member view', async () => {
+    const deals = await ok('GET', '/deals');
+    assert.equal(deals.length, 41);
+    const meta = await ok('GET', '/deals/meta');
+    assert.ok(meta.sections.includes('Реклама'));
+    const s = await ok('GET', '/deals/summary?year=2026');
+    assert.equal(s.table['2026-02']['Дизайн'], 107500);
+    const created = await ok('POST', '/deals', { section: 'Розробки', executor: 'Макс', client: '@newclient', type: 'Бот тг', task: 'Тест-бот', start: '2026-10-01', method: 'Карта', price: '20000грн', prepay: '10000грн', prog: '3000грн', margin: '8000грн' });
+    assert.equal(created.calc.executor_total, 1200000);
+    assert.equal(created.calc.client_left, 1000000);
+    const patched = await ok('PATCH', `/deals/${created.id}`, { closed: true });
+    assert.equal(patched.closed, true);
+    assert.equal(patched.calc.client_left, 0);
+    assert.equal(patched.price, 2000000, 'other fields preserved on PATCH');
+    const bal = await ok('GET', '/deals/balances');
+    assert.ok(bal.open >= 1);
+    // member sees only own deals, without money of the company
+    const memDeals = await ok('GET', '/deals', null, 222);
+    assert.ok(memDeals.every((d) => d.limited && d.price === undefined && d.my));
+    assert.equal((await call('POST', '/deals', { task: 'x', price: '1' }, 222)).status, 403);
+    assert.equal((await call('GET', '/deals/summary', null, 222)).status, 403);
+    await ok('DELETE', `/deals/${created.id}`);
+    assert.equal((await ok('GET', '/deals')).length, 41);
+  });
+
+  await test('google sheet sync: deals sheet mirrors the table and saves edits', async () => {
+    const root = `http://127.0.0.1:${PORT}`;
+    const sync = async (method, p, body) => {
+      const r = await fetch(root + p, { method, headers: { 'x-sync-token': 'sync-secret-123', 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+      return { status: r.status, data: await r.json() };
+    };
+    const ex = await sync('GET', '/sync/export');
+    const cols = ex.data.deals.columns;
+    assert.deepEqual(cols.slice(1, 15), ['Розділ', 'Виконавець', 'Замовник', 'Тип роботи', 'Завдання', 'Дата початку', 'Дата завершення', 'Метод оплати', 'Передоплата', 'Передоплата прог.', 'Ціна', 'Маржа', 'доп послуга, ціна, число оплати', 'Закрита']);
+    assert.equal(ex.data.deals.rows.length, 41);
+    const row = ex.data.deals.rows.find((r) => r[3] === '@viotiki' && r[5] === 'Переклад сайту на фінську');
+    assert.deepEqual(row.slice(6, 15), ['04.02.2026', '06.02.2026', 'Карта', '5000грн', '0грн', '10000грн', '5625грн', '', 'так']);
+    assert.ok(ex.data.summary.rows.length === 12);
+    // редагуємо маржу в таблиці
+    const edited = [...row];
+    edited[12] = '6000грн';
+    const r = await sync('POST', '/sync/row', { sheet: 'deals', columns: cols, values: edited });
+    assert.equal(r.status, 200, JSON.stringify(r.data));
+    assert.equal(r.data.row[12], '6000грн');
+    assert.equal(r.data.row[15], '4000грн', 'executor total recomputed');
+    // новий рядок без ID
+    const blank = cols.map(() => '');
+    const add = Object.assign([...blank], { 1: 'Дизайн', 2: 'Ангеліна', 3: '@sheetclient', 4: 'Креатив', 5: 'Банер', 6: '12.10.2026', 8: 'крипта', 9: '50$', 11: '50$', 12: '50$', 14: 'ні' });
+    const r2 = await sync('POST', '/sync/row', { sheet: 'deals', columns: cols, values: add });
+    assert.equal(r2.status, 200, JSON.stringify(r2.data));
+    assert.ok(r2.data.row[0] > 0);
+    assert.equal((await sync('POST', '/sync/remove', { sheet: 'deals', id: r2.data.row[0] })).status, 200);
   });
 
   await test('excel export works', async () => {

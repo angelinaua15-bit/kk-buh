@@ -7,6 +7,7 @@ import { config } from '../config.js';
 import { all, get, run } from '../db.js';
 import { HttpError, createTx, deleteTx, getTx, listTx, projects, today, updateTx } from './finance.js';
 import { fromMinor, toMinor } from './money.js';
+import { SECTIONS, deleteDeal, getDeal, listDeals, monthlySummary, saveDeal } from './deals.js';
 
 const SYSTEM = { id: null, role: 'admin', name: 'Google-таблиця' };
 const TYPE_UA = { income: 'Дохід', expense: 'Витрата', transfer: 'Переказ' };
@@ -19,7 +20,27 @@ const PSTATUS_IN = inv(PSTATUS_UA);
 
 export const OPERATION_COLUMNS = ['ID', 'Дата', 'Тип', 'Статус', 'Сума', 'Валюта', 'Рахунок', 'На рахунок', 'Категорія', 'Проєкт', 'Клієнт', 'Виконавець', 'Коментар', 'Сума в базі'];
 export const PROJECT_COLUMNS = ['ID', 'Назва', 'Клієнт', 'Статус', 'Тип роботи', 'Бюджет', 'Валюта', 'Оплачено (база)', 'Борг (база)', 'Прибуток (база)', 'Початок', 'Дедлайн', 'Спосіб оплати', 'Нотатки'];
-const READONLY = new Set(['Сума в базі', 'Оплачено (база)', 'Борг (база)', 'Прибуток (база)', 'Валюта']);
+export const DEAL_COLUMNS = ['ID', 'Розділ', 'Виконавець', 'Замовник', 'Тип роботи', 'Завдання', 'Дата початку', 'Дата завершення', 'Метод оплати',
+  'Передоплата', 'Передоплата прог.', 'Ціна', 'Маржа', 'доп послуга, ціна, число оплати', 'Закрита', 'Виконавцю всього', 'Замовник винен', 'Виконавцю ще'];
+const READONLY = new Set(['Сума в базі', 'Оплачено (база)', 'Борг (база)', 'Прибуток (база)', 'Валюта', 'Виконавцю всього', 'Замовник винен', 'Виконавцю ще']);
+
+/** Сума як у таблиці: «5000грн», «74$». */
+const sheetMoney = (minor, cur) => {
+  if (minor === null || minor === undefined) return '';
+  const n = fromMinor(minor);
+  const s = Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/\.?0+$/, '');
+  return cur === 'UAH' ? `${s}грн` : `${s}$`;
+};
+const isoToSheet = (d) => (d ? `${d.slice(8, 10)}.${d.slice(5, 7)}.${d.slice(0, 4)}` : '');
+function dealRow(d) {
+  const c = d.calc;
+  return [
+    d.id, d.section, d.executor, d.client, d.type, d.task, isoToSheet(d.start_date), isoToSheet(d.end_date), d.method,
+    sheetMoney(d.prepay, d.prepay_currency), sheetMoney(d.prog_prepay, d.prog_currency), sheetMoney(d.price, d.currency),
+    d.margin === null ? '' : sheetMoney(d.margin, d.margin_currency), d.extra || '', d.closed ? 'так' : 'ні',
+    sheetMoney(c.executor_total, c.currency), sheetMoney(c.client_left, c.currency), sheetMoney(c.executor_left, c.currency),
+  ];
+}
 
 export function checkSyncToken(token) {
   if (!config.syncToken) throw new HttpError(503, 'Синхронізацію вимкнено: задайте SHEET_SYNC_TOKEN на сервері');
@@ -47,14 +68,25 @@ export function exportAll() {
     p.id, p.name, p.client_name || '', PSTATUS_UA[p.status] || p.status, p.work_type || '', num(p.budget), p.currency,
     num(p.income_base), num(Math.max(0, p.debt_base)), num(p.profit_base), p.start_date || '', p.deadline || '', p.payment_method || '', p.notes || '',
   ]);
+  const summary = monthlySummary();
+  const sumCols = ['Місяць', ...summary.sections, 'Прибуток'];
   return {
     updated_at: new Date().toISOString(),
+    deals: { columns: DEAL_COLUMNS, rows: listDeals().map(dealRow), readonly: DEAL_COLUMNS.filter((c) => READONLY.has(c)) },
+    summary: {
+      columns: sumCols,
+      rows: summary.months.map((m) => [m, ...summary.sections.map((x) => fromMinor(summary.table[m][x])), fromMinor(summary.table[m]['Прибуток'])]),
+      readonly: sumCols,
+    },
     operations: { columns: OPERATION_COLUMNS, rows: operations, readonly: OPERATION_COLUMNS.filter((c) => READONLY.has(c)) },
     projects: { columns: PROJECT_COLUMNS, rows: projectRows, readonly: PROJECT_COLUMNS.filter((c) => READONLY.has(c)) },
     lists: {
       types: Object.values(TYPE_UA),
       statuses: ['Проведено', 'План'],
       project_statuses: Object.values(PSTATUS_UA),
+      sections: SECTIONS,
+      methods: ['Карта', 'ФОП', 'крипта', 'Fh', 'Готівка'],
+      closed: ['так', 'ні'],
       accounts: all('SELECT name FROM accounts WHERE archived=0 ORDER BY sort, id').map((r) => r.name),
       categories: all('SELECT name FROM categories WHERE archived=0 ORDER BY kind, sort, id').map((r) => r.name),
       members: all("SELECT name FROM users WHERE status='active' ORDER BY name").map((r) => r.name),
@@ -134,6 +166,19 @@ export function upsertRow(sheet, cols, values) {
       fresh.to_account_name || '', fresh.category_name || '', fresh.project_name || '', fresh.client_name || '', fresh.member_name || '',
       fresh.comment || '', num(fresh.amount_base)];
   }
+  if (sheet === 'deals') {
+    if (!String(r['Ціна'] ?? '').trim() && !String(r['Передоплата'] ?? '').trim()) return null;
+    const input = {
+      section: r['Розділ'], executor: r['Виконавець'], client: r['Замовник'], type: r['Тип роботи'], task: r['Завдання'],
+      start: cellDate(r['Дата початку']) || r['Дата початку'], end: cellDate(r['Дата завершення']) || r['Дата завершення'],
+      method: r['Метод оплати'], prepay: String(r['Передоплата'] ?? ''), prog: String(r['Передоплата прог.'] ?? ''),
+      price: String(r['Ціна'] ?? ''), margin: String(r['Маржа'] ?? ''), extra: r['доп послуга, ціна, число оплати'],
+      closed: /^(так|yes|true|1|✅|закрит)/i.test(String(r['Закрита'] ?? '').trim()),
+    };
+    const exists = id && getDeal(id);
+    const d = saveDeal(input, SYSTEM, { id: exists ? id : null });
+    return dealRow(d);
+  }
   if (sheet === 'projects') {
     const name = String(r['Назва'] || '').trim();
     if (!name) return null;
@@ -165,6 +210,11 @@ export function upsertRow(sheet, cols, values) {
 export function removeRow(sheet, id) {
   if (sheet === 'operations') {
     deleteTx(Number(id), SYSTEM);
+    return true;
+  }
+  if (sheet === 'deals') {
+    
+    deleteDeal(Number(id));
     return true;
   }
   throw new HttpError(400, 'Видаляти з таблиці можна лише операції');

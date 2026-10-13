@@ -100,6 +100,26 @@ onNewUser(async (user) => {
   );
 });
 
+// Знімок таблиці «KING KONG LAB ПРОЄКТИ» → угоди. Виконується один раз для кожної версії файлу.
+try {
+  const fs = await import('node:fs');
+  const crypto = await import('node:crypto');
+  const file = path.join(ROOT, 'data', 'kk-deals-2026.json');
+  if (fs.existsSync(file)) {
+    const raw = fs.readFileSync(file, 'utf8');
+    const hash = crypto.createHash('sha1').update(raw).digest('hex');
+    const { getSetting, setSetting } = await import('./db.js');
+    if (getSetting('deals_snapshot') !== hash) {
+      const { importSnapshot } = await import('./services/deals.js');
+      const r = importSnapshot(JSON.parse(raw));
+      setSetting('deals_snapshot', hash);
+      console.log('Deals snapshot imported', r);
+    }
+  }
+} catch (e) {
+  console.error('deals snapshot import failed', e);
+}
+
 app.listen(config.port, config.host, () => {
   console.log(`KK-Buh http://${config.host}:${config.port}${config.devMode ? ' (dev)' : ''}${config.webAppUrl ? ` → ${config.webAppUrl}` : ''}`);
   startBot().catch((e) => console.error('bot start failed', e));

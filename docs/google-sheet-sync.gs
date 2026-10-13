@@ -8,18 +8,21 @@
  *  4. Дозвольте доступ, коли Google попросить.
  *
  * Що відбувається:
- *  • Аркуші «Операції (бот)» і «Проєкти (бот)» заповнюються даними з бота й оновлюються кожні 10 хв.
+ *  • «Угоди (бот)» — ті самі колонки, що й у таблиці KING KONG LAB ПРОЄКТИ (+ ID і авто-розрахунки).
+ *  • «Підсумки (бот)» — маржа по місяцях і розділах (рахує бот, лише читання).
+ *  • «Операції (бот)», «Проєкти (бот)» — усі гроші бухгалтерії. Оновлення кожні 10 хв.
  *  • Змінюєте рядок у таблиці — він одразу зберігається в боті (і назад підставляються ID та суми в базі).
  *  • Новий рядок без ID — нова операція/проєкт. Видалити операцію: меню «🦍 KK Бот» → «Видалити виділені операції».
  *  • Сірі колонки рахуються ботом автоматично — їх не редагуйте.
  */
 
-const SHEETS = { operations: 'Операції (бот)', projects: 'Проєкти (бот)' };
+const SHEETS = { deals: 'Угоди (бот)', summary: 'Підсумки (бот)', operations: 'Операції (бот)', projects: 'Проєкти (бот)' };
+const READONLY_SHEETS = ['summary'];
 
 function onOpen() {
   SpreadsheetApp.getUi().createMenu('🦍 KK Бот')
     .addItem('Оновити з бота', 'pullAll')
-    .addItem('Видалити виділені операції', 'deleteSelected')
+    .addItem('Видалити виділені рядки', 'deleteSelected')
     .addSeparator()
     .addItem('Налаштувати', 'setup')
     .addToUi();
@@ -62,6 +65,8 @@ function pullAll() {
   if (!lock.tryLock(20000)) return;
   try {
     const data = call_('get', '/sync/export');
+    writeSheet_(SHEETS.deals, data.deals, data.lists);
+    writeSheet_(SHEETS.summary, data.summary, data.lists);
     writeSheet_(SHEETS.operations, data.operations, data.lists);
     writeSheet_(SHEETS.projects, data.projects, data.lists);
     props_().setProperty('last_pull', data.updated_at);
@@ -87,7 +92,9 @@ function writeSheet_(name, block, lists) {
   });
   const rule = (list) => SpreadsheetApp.newDataValidation().requireValueInList(list, true).setAllowInvalid(false).build();
   const set = (col, list) => { const i = cols.indexOf(col); if (i >= 0 && list && list.length) sh.getRange(2, i + 1, n, 1).setDataValidation(rule(list)); };
-  if (name === SHEETS.operations) {
+  if (name === SHEETS.deals) {
+    set('Розділ', lists.sections); set('Метод оплати', lists.methods); set('Закрита', lists.closed);
+  } else if (name === SHEETS.operations) {
     set('Тип', lists.types); set('Статус', lists.statuses); set('Рахунок', lists.accounts); set('На рахунок', lists.accounts);
     set('Категорія', lists.categories); set('Виконавець', lists.members);
   } else {
@@ -98,7 +105,7 @@ function writeSheet_(name, block, lists) {
 function onEditSync(e) {
   const sh = e.range.getSheet();
   const key = Object.keys(SHEETS).find((k) => SHEETS[k] === sh.getName());
-  if (!key || e.range.getRow() < 2) return;
+  if (!key || READONLY_SHEETS.indexOf(key) >= 0 || e.range.getRow() < 2) return;
   const lock = LockService.getDocumentLock();
   if (!lock.tryLock(20000)) return;
   try {
@@ -122,12 +129,13 @@ function onEditSync(e) {
 
 function deleteSelected() {
   const sh = SpreadsheetApp.getActiveSheet();
-  if (sh.getName() !== SHEETS.operations) return SpreadsheetApp.getUi().alert('Відкрийте аркуш «' + SHEETS.operations + '» і виділіть рядки.');
+  const key = ['deals', 'operations'].find((k) => SHEETS[k] === sh.getName());
+  if (!key) return SpreadsheetApp.getUi().alert('Відкрийте аркуш «' + SHEETS.deals + '» або «' + SHEETS.operations + '» і виділіть рядки.');
   const range = sh.getActiveRange();
   const ids = sh.getRange(range.getRow(), 1, range.getNumRows(), 1).getValues().map((r) => Number(r[0])).filter(Boolean);
   if (!ids.length) return;
   const ui = SpreadsheetApp.getUi();
-  if (ui.alert('Видалити операції: ' + ids.join(', ') + '?', ui.ButtonSet.YES_NO) !== ui.Button.YES) return;
-  ids.forEach((id) => call_('post', '/sync/remove', { sheet: 'operations', id: id }));
+  if (ui.alert('Видалити: ' + ids.join(', ') + '?', ui.ButtonSet.YES_NO) !== ui.Button.YES) return;
+  ids.forEach((id) => call_('post', '/sync/remove', { sheet: key, id: id }));
   pullAll();
 }

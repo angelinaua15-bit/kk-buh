@@ -224,6 +224,14 @@ addColumn('users', 'default_pct', 'default_pct REAL');
 addColumn('clients', 'legal_name', 'legal_name TEXT');
 addColumn('clients', 'legal_code', 'legal_code TEXT');
 addColumn('clients', 'address', 'address TEXT');
+// угоди як у таблиці «KING KONG LAB ПРОЄКТИ»
+for (const [col, ddl] of [
+  ['section', 'section TEXT'], ['executor_id', 'executor_id INTEGER'], ['margin', 'margin INTEGER'], ['margin_currency', 'margin_currency TEXT'],
+  ['prepay', 'prepay INTEGER NOT NULL DEFAULT 0'], ['prepay_currency', 'prepay_currency TEXT'], ['prog_prepay', 'prog_prepay INTEGER NOT NULL DEFAULT 0'],
+  ['prog_currency', 'prog_currency TEXT'], ['extra', 'extra TEXT'], ['closed', 'closed INTEGER NOT NULL DEFAULT 0'], ['deal_key', 'deal_key TEXT'],
+]) addColumn('projects', col, ddl);
+addColumn('transactions', 'deal_part', 'deal_part TEXT');
+db.exec('CREATE UNIQUE INDEX IF NOT EXISTS projects_deal_key ON projects(deal_key) WHERE deal_key IS NOT NULL');
 
 
 export function getSetting(key, def = null) {

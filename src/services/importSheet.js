@@ -6,6 +6,7 @@ import ExcelJS from 'exceljs';
 import { get, run } from '../db.js';
 import { createTx } from './finance.js';
 import { toMinor } from './money.js';
+import { SECTIONS, dealKey, retireLegacyImport, saveDeal } from './deals.js';
 
 const ALIAS = {
   date: ['дата', 'date', 'день'],
@@ -111,263 +112,76 @@ function isSummaryRow(r) {
     && !line.includes('виконавець');
 }
 
-function parseMoney(raw) {
-  if (raw == null || raw === '' || raw === 0) return null;
-  if (raw instanceof Date) return null;
-  const s = String(raw).trim();
-  if (!s || s === '-' || /^[-—–]+$/.test(s)) return null;
-  const cur = /\$|usd|usdt/i.test(s) ? (/usdt/i.test(s) ? 'USDT' : 'USD')
-    : /грн|uah|₴/i.test(s) ? 'UAH' : null;
-  let numPart = s.replace(/\s/g, '').replace(/[^\d.,-]/g, '');
-  if (/^\d{1,3}\.\d{3}$/.test(numPart)) numPart = numPart.replace('.', '');
-  else numPart = numPart.replace(',', '.');
-  const n = Number(numPart);
-  if (!Number.isFinite(n) || Math.abs(n) < 2) return null;
-  return { amount: Math.abs(n), currency: cur };
-}
-
-function moneyWithFallback(raw, method) {
-  const m = parseMoney(raw);
-  if (!m) return null;
-  if (!m.currency) m.currency = /крипт|crypto|usdt/i.test(method || '') ? 'USD' : 'UAH';
-  return m;
-}
-
-function pickAccount(method, currency) {
-  const m = norm(method);
-  if (currency === 'USD' || currency === 'USDT') {
-    if (/крипт|crypto|usdt/.test(m)) {
-      return findOrCreate('accounts', 'USDT (TRC20)', { currency: 'USDT', type: 'crypto' })
-        || get("SELECT id FROM accounts WHERE currency IN ('USDT','USD') ORDER BY id LIMIT 1")?.id;
-    }
-    return findOrCreate('accounts', 'Готівка $', { currency: 'USD', type: 'cash' });
-  }
-  if (/фоп|fop/.test(m)) return findOrCreate('accounts', 'Monobank ФОП', { currency: 'UAH', type: 'bank' });
-  if (/^fh\b|фріенд|friend/.test(m)) return findOrCreate('accounts', 'Fh', { currency: 'UAH', type: 'card' });
-  return findOrCreate('accounts', 'Картка Mono', { currency: 'UAH', type: 'card' });
-}
-
-function incomeCategory(type, section) {
-  const s = `${norm(type)} ${norm(section)}`;
-  if (/бот|bot|mini/.test(s)) return ['Telegram-боти / Mini Apps', '🤖'];
-  if (/сайт|ленд|верстк|figma|hubspot|1с|1c/.test(s)) return ['Розробка сайтів', '💻'];
-  if (/креатив|дизайн/.test(s)) return ['Дизайн / UI/UX', '🎨'];
-  if (/seo|google ads/.test(s)) return ['SEO', '🔍'];
-  if (/трафік|перелив|таргет|реклам/.test(s)) return ['Трафік / таргет', '📈'];
-  return ['Інші надходження', '💰'];
-}
-
-function projectStatus(start, end, today = new Date().toISOString().slice(0, 10)) {
-  if (end && end <= today) return 'done';
-  if (start && start > today) return 'lead';
-  return 'active';
-}
-
-function findMember(name) {
-  const n = String(name || '').replace(/\s+/g, ' ').trim();
-  if (!n) return null;
-  const uname = n.replace(/^@/, '').split(/\s+/)[0];
-  const row = get(
-    `SELECT * FROM users WHERE lower(name)=lower(?) OR lower(username)=lower(?)
-      OR lower(name) LIKE lower(?) OR lower(username)=lower(?) LIMIT 1`,
-    n, n.replace(/^@/, ''), `${n.split(' ')[0]}%`, uname,
-  );
-  if (row) return row.id;
-  return findOrCreate('users', n.replace(/^@/, ''));
-}
-
-function findClient(name) {
-  const n = String(name || '').replace(/\s+/g, ' ').trim();
-  if (!n) return null;
-  if (/^\d{5,}$/.test(n)) return findOrCreate('clients', `TG ${n}`);
-  return findOrCreate('clients', n);
-}
-
-function alreadyImported(type, date, amount, comment) {
-  return get(
-    `SELECT id FROM transactions WHERE deleted_at IS NULL AND type=? AND date=? AND amount=? AND ifnull(comment,'')=?`,
-    type, date, amount, comment || '',
-  );
-}
-
-function addTx(actor, payload) {
-  if (!payload.account_id || !payload.amount || !payload.date) return 'skip';
-  if (alreadyImported(payload.type, payload.date, payload.amount, payload.comment)) return 'skip';
-  try {
-    createTx({ ...payload, status: 'done' }, actor);
-    return 'ok';
-  } catch (e) {
-    console.warn('import tx', e.message || e);
-    return 'skip';
-  }
-}
-
-function parseExtra(raw, yearHint) {
-  const s = String(raw || '').trim();
-  if (!s || s === '-') return [];
-  const out = [];
-  const re = /(\d+(?:[ .]\d{3})*(?:[.,]\d+)?)\s*(грн|uah|\$|usd)?/gi;
-  let m;
-  while ((m = re.exec(s))) {
-    const money = parseMoney(`${m[1]}${m[2] || 'грн'}`);
-    if (!money) continue;
-    const dm = s.match(/(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?/);
-    let date = null;
-    if (dm) {
-      const y = dm[3] ? (dm[3].length === 2 ? `20${dm[3]}` : dm[3]) : (yearHint || '2026');
-      date = `${y}-${dm[2].padStart(2, '0')}-${dm[1].padStart(2, '0')}`;
-    }
-    out.push({ ...money, date, note: s });
-  }
-  return out;
-}
-
-function upsertProject(name, extra) {
-  const row = get(
-    "SELECT * FROM projects WHERE lower(name)=lower(?) AND ifnull(client_id,0)=ifnull(?,0) AND ifnull(start_date,'')=ifnull(?, '')",
-    name, extra.client_id || 0, extra.start_date || '',
-  );
-  if (row) {
-    run(
-      'UPDATE projects SET status=?, budget=?, currency=?, start_date=COALESCE(?, start_date), deadline=COALESCE(?, deadline), notes=COALESCE(?, notes) WHERE id=?',
-      extra.status || row.status, extra.budget ?? row.budget, extra.currency || row.currency,
-      extra.start_date || null, extra.deadline || null, extra.notes || null, row.id,
-    );
-    return row.id;
-  }
-  const r = run(
-    'INSERT INTO projects(name, client_id, status, budget, currency, start_date, deadline, notes) VALUES(?,?,?,?,?,?,?,?)',
-    name, extra.client_id || null, extra.status || 'active', extra.budget || 0, extra.currency || 'USD',
-    extra.start_date || null, extra.deadline || null, extra.notes || null,
-  );
-  return Number(r.lastInsertRowid);
-}
-
-function importKkBlock(cells, section, actor) {
-  try {
-  const [executor, client, type, task, startRaw, endRaw, method, prepayRaw, contractorRaw, priceRaw, , extraRaw] = cells;
-  const taskName = String(task || '').replace(/\s+/g, ' ').trim();
-  const clientName = String(client || '').replace(/\s+/g, ' ').trim();
-  const typeName = String(type || '').replace(/\s+/g, ' ').trim();
-  if (!taskName && !clientName && !priceRaw && !prepayRaw) return { imported: 0, skipped: 0, projects: 0 };
-  const start = excelDate(startRaw);
-  const end = excelDate(endRaw);
-  const methodName = String(method || '').trim();
-  const price = moneyWithFallback(priceRaw, methodName) || moneyWithFallback(prepayRaw, methodName);
-  if (!price && !taskName) return { imported: 0, skipped: 1, projects: 0 };
-
-  const client_id = findClient(clientName);
-  const member_id = findMember(executor);
-  const currency = price?.currency || 'UAH';
-  const projName = [`[${section}]`, taskName || typeName, clientName].filter(Boolean).join(' · ').slice(0, 180);
-  const notes = [section, typeName, methodName, extraRaw].filter(Boolean).join(' · ');
-  const project_id = upsertProject(projName, {
-    client_id,
-    status: projectStatus(start, end),
-    budget: price ? toMinor(price.amount) : 0,
-    currency,
-    start_date: start,
-    deadline: end,
-    notes,
-  });
-  const date = start || end;
-  if (!date) return { imported: 0, skipped: 1, projects: 1 };
-
-  let imported = 0;
-  let skipped = 0;
-  const [incName, incEmoji] = incomeCategory(typeName, section);
-  const incomeCat = findOrCreate('categories', incName, { kind: 'income', emoji: incEmoji });
-  const expCat = findOrCreate('categories', 'Субпідрядники / фріланс', { kind: 'expense', emoji: '🤝' });
-
-  if (price) {
-    const comment = `Оплата клієнта · ${taskName || typeName}`;
-    const r = addTx(actor, {
-      type: 'income',
-      date,
-      amount: toMinor(price.amount),
-      account_id: pickAccount(methodName, price.currency),
-      category_id: incomeCat,
-      project_id,
-      client_id,
-      member_id,
-      comment,
-    });
-    r === 'ok' ? imported++ : skipped++;
-  }
-
-  const contractor = moneyWithFallback(contractorRaw, methodName);
-  if (contractor) {
-    const comment = `Виплата виконавцю · ${String(executor || '').trim() || 'підрядник'}`;
-    const r = addTx(actor, {
-      type: 'expense',
-      date,
-      amount: toMinor(contractor.amount),
-      account_id: pickAccount(methodName, contractor.currency),
-      category_id: expCat,
-      project_id,
-      client_id,
-      member_id,
-      comment,
-    });
-    r === 'ok' ? imported++ : skipped++;
-  }
-
-  for (const extra of parseExtra(extraRaw, (start || end || '').slice(0, 4))) {
-    const extraDate = extra.date || date;
-    const comment = extra.note.slice(0, 200);
-    const r = addTx(actor, {
-      type: 'income',
-      date: extraDate,
-      amount: toMinor(extra.amount),
-      account_id: pickAccount(methodName, extra.currency || currency),
-      category_id: incomeCat,
-      project_id,
-      client_id,
-      member_id,
-      comment,
-    });
-    r === 'ok' ? imported++ : skipped++;
-  }
-
-  return { imported, skipped, projects: 1 };
-  } catch (e) {
-    console.warn('import project', e.message || e);
-    return { imported: 0, skipped: 1, projects: 0 };
-  }
+/** Колір заливки → угода закрита (зелені відтінки, як у таблиці). */
+function isGreen(cell) {
+  const argb = cell?.fill?.fgColor?.argb || cell?.fill?.bgColor?.argb;
+  if (!argb || argb.length < 8) return false;
+  const r = parseInt(argb.slice(2, 4), 16);
+  const g = parseInt(argb.slice(4, 6), 16);
+  const b = parseInt(argb.slice(6, 8), 16);
+  return g > 120 && g > r + 25 && g > b + 25;
 }
 
 export function importKkProjects(wb, actor = { id: null, role: 'admin' }) {
-  let imported = 0;
+  let created = 0;
+  let updated = 0;
   let skipped = 0;
-  let projects = 0;
+  const errors = [];
   const sheets = [];
+  const retired = retireLegacyImport();
+  const year = Number(new Date().toISOString().slice(0, 4));
 
   for (const ws of wb.worksheets) {
     const rows = [];
-    ws.eachRow((row) => rows.push(row.values.slice(1).map(cellText)));
-    if (!isKkProjectsSheet(rows)) continue;
-    let leftSection = 'Розробки';
-    let rightSection = 'Реклама';
-    let sheetImported = 0;
-    let sheetSkipped = 0;
-    let sheetProjects = 0;
-    for (const r of rows) {
-      if (isHeaderRow(r) || isSummaryRow(r)) continue;
-      if (isSectionTitle(r[1]) && !String(r[2] || '').trim()) leftSection = String(r[1]).trim();
-      if (isSectionTitle(r[15]) && !String(r[16] || '').trim()) rightSection = String(r[15]).trim();
-      const left = importKkBlock(r.slice(1, 13), leftSection, actor);
-      const right = importKkBlock(r.slice(15, 27), rightSection, actor);
-      imported += left.imported + right.imported;
-      skipped += left.skipped + right.skipped;
-      projects += left.projects + right.projects;
-      sheetImported += left.imported + right.imported;
-      sheetSkipped += left.skipped + right.skipped;
-      sheetProjects += left.projects + right.projects;
+    ws.eachRow((row) => rows.push(row));
+    const values = rows.map((r) => r.values.slice(1).map(cellText));
+    if (!isKkProjectsSheet(values)) continue;
+    let sheetDeals = 0;
+    // блоки: заголовок «Виконавець …» може бути зліва (кол. B) і справа (кол. P)
+    const blocks = [];
+    rows.forEach((row, i) => {
+      const v = values[i];
+      v.forEach((c, j) => {
+        if (norm(c) === 'виконавець' && norm(v[j + 1]) === 'замовник') {
+          const above = values[i - 1] || [];
+          const title = String(above[j] || above[j - 1] || '').trim() || 'Інше';
+          blocks.push({ header: i, col: j, title });
+        }
+      });
+    });
+    for (const blk of blocks) {
+      const section = SECTIONS.find((x) => norm(blk.title).startsWith(norm(x).split(' ')[0])) || 'Інше';
+      const next = blocks.filter((x) => x.col === blk.col && x.header > blk.header).map((x) => x.header)[0] ?? rows.length;
+      for (let i = blk.header + 1; i < next; i++) {
+        const v = values[i];
+        const cells = v.slice(blk.col, blk.col + 12);
+        const [executor, client, type, task, start, end, method, prepay, prog, price, margin, extra] = cells;
+        if (isSummaryRow(v) || isHeaderRow(cells)) continue;
+        if (!String(client || '').trim() && !String(task || '').trim() && !String(price || '').trim()) continue;
+        const n = Number(v[blk.col - 1]) || i;
+        const excelCell = rows[i].getCell(blk.col + 2); // перша клітинка блоку (Виконавець), 1-based
+        const row = {
+          n, executor, client, type, task: task || type,
+          start: start instanceof Date ? start.toISOString().slice(0, 10) : excelDate(start) || String(start || ''),
+          end: end instanceof Date ? end.toISOString().slice(0, 10) : excelDate(end) || String(end || ''),
+          method, prepay, prog, price, margin, extra,
+          closed: isGreen(excelCell) || isGreen(rows[i].getCell(blk.col + 4)),
+        };
+        const key = dealKey(section, row, year);
+        const existed = Boolean(get('SELECT id FROM projects WHERE deal_key = ?', key));
+        try {
+          saveDeal({ ...row, section }, actor, { key, year });
+          existed ? updated++ : created++;
+          sheetDeals++;
+        } catch (e) {
+          skipped++;
+          errors.push(`${section} №${n}: ${e.message}`);
+        }
+      }
     }
-    sheets.push({ name: ws.name, imported: sheetImported, skipped: sheetSkipped, projects: sheetProjects });
+    sheets.push({ name: ws.name, deals: sheetDeals });
   }
-
-  return { imported, skipped, projects, sheets, format: 'kk-projects' };
+  return { imported: created + updated, created, updated, skipped, retired, errors, sheets, format: 'kk-deals' };
 }
 
 export async function importWorkbook(wb, actor = { id: null, role: 'admin' }) {

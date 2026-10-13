@@ -41,6 +41,7 @@ import {
   checkLimit, compare, debts, forecast, listTemplates, memberCabinet, payouts, reminderText, taxes, useTemplate, weeklyReport,
 } from './services/extras.js';
 import { dailyRates, makeBackup, monoEnabled, syncMono } from './services/integrations.js';
+import { METHODS, SECTIONS, calcDeal, dealBalances, getDeal, listDeals, monthlySummary, normalizeDeal, parseDate, parseMoney, saveDeal } from './services/deals.js';
 
 export const bot = config.botToken
   ? new Bot(config.botToken, config.forceTelegramIp ? { client: { fetch: telegramFetch } } : {})
@@ -53,6 +54,7 @@ export const webAppKb = (user) => {
   if (url) kb.webApp('🦍 Бухгалтерія KK', url).row();
   kb.text('➕ Дохід').text('➖ Витрата').row();
   if (user && can.seeAll(user)) {
+    kb.text('🤝 Нова угода').text('📋 Угоди').row();
     kb.text('💼 Баланс').text('📊 Місяць').row().text('📌 Борги').text('📅 План').row().text('⚡ Шаблони').text('👥 Команда');
   } else {
     kb.text('👤 Мій кабінет').text('⚡ Шаблони');
@@ -205,7 +207,35 @@ if (bot) {
     '⚡ Шаблони': 'templates',
     '📌 Борги': 'debts',
     '👤 Мій кабінет': 'cabinet',
+    '🤝 Нова угода': 'newdeal',
+    '📋 Угоди': 'deals',
   };
+
+  bot.command('deal', (ctx) => needActive(ctx, ctx.kk) && startDealWizard(ctx));
+  bot.command('deals', (ctx) => needActive(ctx, ctx.kk) && sendDeals(ctx));
+  bot.command('summary', async (ctx) => {
+    if (!needActive(ctx, ctx.kk)) return;
+    if (!can.seeAll(ctx.kk)) return ctx.reply('Підсумки бачить адмін або фінансист.');
+    await ctx.reply(summaryText(monthlySummary()), { parse_mode: 'HTML', reply_markup: appBtn(ctx.kk) });
+  });
+  bot.callbackQuery(/^dw:([\w-]+):(.*)$/, async (ctx) => {
+    const w = wizards.get(ctx.kk?.id);
+    if (!w) return ctx.answerCallbackQuery({ text: 'Майстер закрито — почни знову «🤝 Нова угода»' });
+    await ctx.answerCallbackQuery();
+    return wizardInput(ctx, w, ctx.match[1], ctx.match[2]);
+  });
+  bot.callbackQuery(/^dclose:(\d+)$/, async (ctx) => {
+    if (!can.writeRefs(ctx.kk || {})) return ctx.answerCallbackQuery({ text: 'Немає прав' });
+    try {
+      const d = getDeal(Number(ctx.match[1]));
+      if (!d) return ctx.answerCallbackQuery({ text: 'Угоду не знайдено' });
+      const saved = saveDeal({ ...dealToInput(d), closed: true }, ctx.kk, { id: d.id });
+      await ctx.editMessageText(`✅ Закрито: ${esc(saved.task)} · ${esc(saved.client)}\nМаржа ${fmt(saved.calc.margin_original.amount, saved.calc.margin_original.currency)}`, { parse_mode: 'HTML' }).catch(() => {});
+      return ctx.answerCallbackQuery({ text: 'Угоду закрито' });
+    } catch (e) {
+      return ctx.answerCallbackQuery({ text: (e.message || 'Помилка').slice(0, 190), show_alert: true });
+    }
+  });
 
   bot.command('templates', (ctx) => needActive(ctx, ctx.kk) && sendTemplates(ctx));
   bot.command('debts', (ctx) => needActive(ctx, ctx.kk) && sendDebts(ctx));
@@ -316,6 +346,12 @@ if (bot) {
     const u = ctx.kk;
     if (!needActive(ctx, u)) return;
 
+    if (textMap[t] === 'newdeal') return startDealWizard(ctx);
+    if (textMap[t] === 'deals') return sendDeals(ctx);
+    const wiz = wizards.get(u.id);
+    if (wiz && !textMap[t]) return wizardInput(ctx, wiz, 'text', t);
+    if (wiz && textMap[t]) wizards.delete(u.id);
+
     if (textMap[t] === 'balance') {
       if (!can.seeAll(u)) return ctx.reply('Немає доступу до загальних балансів.');
       const b = balances();
@@ -420,6 +456,196 @@ function esc(s) {
 export async function sendFile(chatId, buffer, filename, caption) {
   if (!bot) throw new Error('Бот не налаштований');
   await bot.api.sendDocument(chatId, new InputFile(buffer, filename), { caption });
+}
+
+/* ───────────── Майстер угоди (поля як у таблиці) ───────────── */
+const wizards = new Map();
+const STEPS = ['section', 'executor', 'client', 'type', 'task', 'start', 'end', 'method', 'price', 'prepay', 'prog', 'margin', 'extra', 'closed', 'confirm'];
+const ASK = {
+  section: 'Розділ таблиці:',
+  executor: 'Виконавець (хто робить):',
+  client: 'Замовник (@username, імʼя або id):',
+  type: 'Тип роботи:',
+  task: 'Завдання (коротко):',
+  start: 'Дата початку (дд.мм):',
+  end: 'Дата завершення (дд.мм) або «Пропустити», якщо ще в роботі:',
+  method: 'Метод оплати:',
+  price: 'Ціна для замовника (напр. <code>10000 грн</code> або <code>400$</code>):',
+  prepay: 'Передоплата від замовника (0, якщо немає):',
+  prog: 'Передоплата виконавцю — «Передоплата прог.» (0, якщо немає):',
+  margin: 'Маржа (наш заробіток):',
+  extra: 'Доп. послуга — ціна й число оплати (напр. <code>плюс 600 грн 10.03</code>) або «Пропустити»:',
+  closed: 'Угода закрита й повністю оплачена?',
+};
+
+function wizKb(w, step) {
+  const kb = new InlineKeyboard();
+  // значення кнопок зберігаємо в майстрі (callback_data ≤ 64 байти, а кирилиця — 2 байти на літеру)
+  w.opts = w.opts || {};
+  w.opts[step] = [];
+  const btn = (label, value) => {
+    w.opts[step].push(value);
+    return kb.text(String(label).slice(0, 60), `dw:${step}:#${w.opts[step].length - 1}`);
+  };
+  if (step === 'section') SECTIONS.forEach((s, i) => { btn(s, s); if (i % 2) kb.row(); });
+  if (step === 'executor') {
+    btn('Я сама / сам', '__me').row();
+    all('SELECT u.name, COUNT(*) n FROM projects p JOIN users u ON u.id = p.executor_id GROUP BY u.id ORDER BY n DESC LIMIT 6')
+      .forEach((r, i) => { btn(r.name, r.name); if (i % 2) kb.row(); });
+  }
+  if (step === 'client') all("SELECT cl.name FROM projects p JOIN clients cl ON cl.id = p.client_id WHERE p.section IS NOT NULL GROUP BY cl.id ORDER BY MAX(p.id) DESC LIMIT 6")
+    .forEach((r, i) => { btn(r.name, r.name); if (i % 2) kb.row(); });
+  if (step === 'type') all("SELECT work_type AS t, COUNT(*) n FROM projects WHERE work_type != '' AND section = ? GROUP BY lower(work_type) ORDER BY n DESC LIMIT 6", w.data.section || '')
+    .forEach((r, i) => { btn(r.t, r.t); if (i % 2) kb.row(); });
+  if (step === 'start') btn('Сьогодні', today());
+  if (step === 'end') btn('Сьогодні', today()).text('Пропустити', `dw:${step}:__skip`);
+  if (step === 'method') METHODS.forEach((m) => btn(m, m));
+  if (step === 'prepay' || step === 'prog') btn('0 — немає', '0');
+  if (step === 'margin') {
+    const price = parseMoney(w.data.price);
+    const prog = parseMoney(w.data.prog, price?.currency);
+    if (price && prog && prog.currency === price.currency && prog.amount) btn(`= Ціна − Передоплата прог. (${fmt(price.amount - prog.amount, price.currency)})`, '__auto');
+    if (price) kb.row().text(`Уся ціна — робота своя (${fmt(price.amount, price.currency)})`, `dw:${step}:__all`);
+  }
+  if (step === 'extra') btn('Пропустити', '__skip');
+  if (step === 'closed') btn('✅ Так, закрита', '1').text('⏳ Ні, в роботі', 'dw:closed:0');
+  if (step === 'confirm') kb.text('✅ Зберегти', 'dw:confirm:save').row().text('✏️ Почати спочатку', 'dw:confirm:restart').text('❌ Скасувати', 'dw:confirm:cancel');
+  if (!['section', 'confirm', 'closed'].includes(step)) kb.row().text('⬅️ Назад', `dw:${step}:__back`).text('❌', `dw:${step}:__cancel`);
+  return kb;
+}
+
+async function askStep(ctx, w) {
+  const step = STEPS[w.i];
+  if (step === 'confirm') {
+    let preview;
+    try {
+      const d = normalizeDeal(w.data);
+      const c = calcDeal(d);
+      preview = `<b>${esc(d.section)}</b> · ${esc(d.task)}\n`
+        + `👤 Виконавець: ${esc(d.executor || '—')}\n🤝 Замовник: ${esc(d.client || '—')}\n🏷 ${esc(d.type || '—')}\n`
+        + `📅 ${d.start_date || '—'} → ${d.end_date || 'в роботі'}\n💳 ${esc(d.method || '—')}\n\n`
+        + `Ціна: <b>${fmt(d.price, d.price_currency)}</b>\nПередоплата: ${fmt(d.prepay, d.prepay_currency)}\nПередоплата прог.: ${fmt(d.prog_prepay, d.prog_currency)}\n`
+        + `Маржа: <b>${fmt(c.margin_original.amount, c.margin_original.currency)}</b>\nВиконавцю всього: ${fmt(c.executor_total, c.currency)}\n`
+        + `${d.extra ? `Доп. послуга: ${esc(d.extra)}\n` : ''}\n${d.closed ? '✅ Закрита й оплачена' : `⏳ В роботі · замовник винен ${fmt(c.client_left, c.currency)} · виконавцю ще ${fmt(c.executor_left, c.currency)}`}`;
+    } catch (e) {
+      w.i = STEPS.indexOf('price');
+      await ctx.reply(`⚠️ ${esc(e.message)}`, { parse_mode: 'HTML' });
+      return askStep(ctx, w);
+    }
+    return ctx.reply(`Перевір угоду:\n\n${preview}`, { parse_mode: 'HTML', reply_markup: wizKb(w, 'confirm') });
+  }
+  return ctx.reply(`${w.i + 1}/${STEPS.length - 1} · ${ASK[step]}`, { parse_mode: 'HTML', reply_markup: wizKb(w, step) });
+}
+
+async function startDealWizard(ctx) {
+  if (!can.writeRefs(ctx.kk)) return ctx.reply('Угоди додає адмін або фінансист.');
+  pending.delete(ctx.kk.id);
+  const w = { i: 0, data: {} };
+  wizards.set(ctx.kk.id, w);
+  await ctx.reply('🤝 <b>Нова угода</b> — як рядок у таблиці. Можна відповідати кнопками або текстом.', { parse_mode: 'HTML' });
+  return askStep(ctx, w);
+}
+
+async function wizardInput(ctx, w, step, raw) {
+  const cur = STEPS[w.i];
+  if (step !== 'text' && step !== cur) return; // натиснули кнопку старого кроку
+  let value = String(raw ?? '').trim();
+  if (step !== 'text' && /^#\d+$/.test(value)) value = String(w.opts?.[cur]?.[Number(value.slice(1))] ?? '');
+  if (value === '__cancel') { wizards.delete(ctx.kk.id); return ctx.reply('❌ Угоду скасовано.'); }
+  if (value === '__back') { w.i = Math.max(0, w.i - 1); return askStep(ctx, w); }
+  if (cur === 'confirm') {
+    if (value === 'cancel') { wizards.delete(ctx.kk.id); return ctx.reply('❌ Угоду скасовано.'); }
+    if (value === 'restart') { w.i = 0; w.data = {}; return askStep(ctx, w); }
+    if (value === 'save') {
+      try {
+        const d = saveDeal(w.data, ctx.kk);
+        wizards.delete(ctx.kk.id);
+        return ctx.reply(`✅ Угоду збережено (#${d.id}). Операції, борги й виплати перераховано.`, { reply_markup: appBtn(ctx.kk) });
+      } catch (e) {
+        return ctx.reply(`⚠️ ${e.message}`);
+      }
+    }
+    return askStep(ctx, w);
+  }
+  const d = w.data;
+  const setAndNext = (k, v) => { d[k] = v; w.i += 1; return askStep(ctx, w); };
+  switch (cur) {
+    case 'section': {
+      const s = SECTIONS.find((x) => x.toLowerCase() === value.toLowerCase());
+      if (!s) return ctx.reply('Обери розділ кнопкою.', { reply_markup: wizKb(w, cur) });
+      return setAndNext('section', s);
+    }
+    case 'executor': return setAndNext('executor', value === '__me' ? ctx.kk.name : value);
+    case 'client': case 'type': case 'task': case 'method':
+      if (!value) return askStep(ctx, w);
+      return setAndNext(cur, value);
+    case 'start': case 'end': {
+      if (cur === 'end' && (value === '__skip' || /^пропуст/i.test(value))) return setAndNext('end', '');
+      const date = /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : /сьогодні/i.test(value) ? today() : parseDate(value);
+      if (!date) return ctx.reply('Не зрозумів дату. Напиши у форматі <code>дд.мм</code>, напр. <code>25.10</code>.', { parse_mode: 'HTML' });
+      return setAndNext(cur, date);
+    }
+    case 'price': case 'prepay': case 'prog': {
+      const fallback = /крипт/i.test(d.method || '') ? 'USD' : (parseMoney(d.price)?.currency || 'UAH');
+      if (/^(0|немає|нема|-)$/i.test(value)) return setAndNext(cur, '0');
+      const m = parseMoney(value, fallback);
+      if (!m || (cur === 'price' && !m.amount)) return ctx.reply('Напиши суму, напр. <code>10000 грн</code> або <code>400$</code>.', { parse_mode: 'HTML' });
+      return setAndNext(cur, `${m.amount / 100}${m.currency === 'UAH' ? 'грн' : '$'}`);
+    }
+    case 'margin': {
+      const price = parseMoney(d.price);
+      if (value === '__auto') {
+        const prog = parseMoney(d.prog, price.currency);
+        return setAndNext('margin', `${(price.amount - (prog?.amount || 0)) / 100}${price.currency === 'UAH' ? 'грн' : '$'}`);
+      }
+      if (value === '__all') return setAndNext('margin', d.price);
+      const m = parseMoney(value, price?.currency || 'UAH');
+      if (!m) return ctx.reply('Напиши маржу сумою, напр. <code>5000 грн</code>.', { parse_mode: 'HTML' });
+      if (price && m.currency === price.currency && m.amount > price.amount) return ctx.reply('Маржа не може бути більшою за ціну. Спробуй ще раз.');
+      return setAndNext('margin', `${m.amount / 100}${m.currency === 'UAH' ? 'грн' : '$'}`);
+    }
+    case 'extra': return setAndNext('extra', value === '__skip' || /^пропуст/i.test(value) ? '' : value);
+    case 'closed': return setAndNext('closed', value === '1' || /^(так|yes|✅)/i.test(value));
+    default: return askStep(ctx, w);
+  }
+}
+
+function dealToInput(d) {
+  const money = (v, c) => (v === null || v === undefined ? '' : { amount: v, currency: c });
+  return {
+    section: d.section, executor: d.executor, client: d.client, type: d.type, task: d.task, start: d.start_date, end: d.end_date || (d.closed ? '' : ''),
+    method: d.method, price: money(d.price, d.currency), prepay: money(d.prepay, d.prepay_currency), prog: money(d.prog_prepay, d.prog_currency),
+    margin: d.margin === null ? '' : money(d.margin, d.margin_currency), extra: d.extra, closed: d.closed,
+  };
+}
+
+async function sendDeals(ctx) {
+  const u = ctx.kk;
+  if (!can.seeAll(u)) {
+    const mine = listDeals({ status: 'open' }).filter((d) => d.executor_id === u.id);
+    if (!mine.length) return ctx.reply('У тебе немає відкритих угод.');
+    return ctx.reply(`📋 <b>Мої угоди в роботі</b>\n\n${mine.map((d) => `• ${esc(d.task)} · ${esc(d.client)}\n  отримаю ${fmt(d.calc.executor_total, d.calc.currency)}, вже ${fmt(d.prog_prepay, d.prog_currency || d.calc.currency)}`).join('\n')}`, { parse_mode: 'HTML' });
+  }
+  const b = dealBalances();
+  if (!b.deals.length) return ctx.reply('Усі угоди закриті 🎉', { reply_markup: appBtn(u) });
+  await ctx.reply(`📋 <b>Угоди в роботі: ${b.open}</b>\nЗамовники винні ≈ <b>${fmt(b.clients_owe_uah, 'UAH')}</b>\nВиконавцям ще ≈ <b>${fmt(b.we_owe_executors_uah, 'UAH')}</b>`, { parse_mode: 'HTML' });
+  for (const d of b.deals.slice(0, 15)) {
+    await ctx.reply(
+      `<b>${esc(d.section)}</b> · ${esc(d.task)}\n🤝 ${esc(d.client || '—')} · 👤 ${esc(d.executor || '—')}\n📅 з ${d.start_date || '—'}\n`
+      + `Ціна ${fmt(d.price, d.currency)} · отримано ${fmt(d.prepay, d.prepay_currency)} · маржа ${fmt(d.calc.margin_original.amount, d.calc.margin_original.currency)}\n`
+      + `Замовник винен <b>${fmt(d.calc.client_left, d.calc.currency)}</b> · виконавцю ще <b>${fmt(d.calc.executor_left, d.calc.currency)}</b>`,
+      { parse_mode: 'HTML', reply_markup: can.writeRefs(u) ? new InlineKeyboard().text('✅ Закрити — все оплачено', `dclose:${d.id}`) : undefined },
+    );
+  }
+}
+
+function summaryText(s) {
+  const rows = s.months.filter((m) => s.counts[m]).map((m) => {
+    const t = s.table[m];
+    const parts = s.sections.filter((x) => t[x]).map((x) => `${x} ${fmt(t[x], 'UAH')}`);
+    return `<b>${m}</b> — ${fmt(t['Прибуток'], 'UAH')}\n  ${parts.join(' · ')}`;
+  });
+  return `📊 <b>Підсумки ${s.year}</b> (маржа, грн; $ за курсом ${s.usd_rate})\n\n${rows.join('\n') || 'Поки немає угод'}\n\nРазом: <b>${fmt(s.totals['Прибуток'], 'UAH')}</b>`;
 }
 
 const drafts = new Map();
@@ -640,6 +866,9 @@ export async function startBot() {
       { command: 'balance', description: 'Баланси рахунків' },
       { command: 'report', description: 'Звіт за місяць' },
       { command: 'pending', description: 'Операції на перевірці' },
+      { command: 'deal', description: 'Нова угода (як у таблиці)' },
+      { command: 'deals', description: 'Угоди в роботі' },
+      { command: 'summary', description: 'Підсумки маржі по місяцях' },
       { command: 'debts', description: 'Борги клієнтів' },
       { command: 'forecast', description: 'Прогноз каси на 4 тижні' },
       { command: 'taxes', description: 'Податки ФОП' },
