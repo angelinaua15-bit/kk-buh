@@ -19,6 +19,28 @@ app.use((req, res, next) => {
   next();
 });
 
+// Google-таблиця ↔ бот (Apps Script). Авторизація — заголовок X-Sync-Token.
+const syncRoute = (fn) => async (req, res) => {
+  try {
+    const { checkSyncToken } = await import('./services/sheetSync.js');
+    checkSyncToken(req.get('x-sync-token'));
+    res.json(await fn(req));
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.status ? e.message : 'Внутрішня помилка' });
+    if (!e.status) console.error('sync', e);
+  }
+};
+app.get('/sync/export', syncRoute(async () => (await import('./services/sheetSync.js')).exportAll()));
+app.post('/sync/row', syncRoute(async (req) => {
+  const { upsertRow } = await import('./services/sheetSync.js');
+  const b = req.body || {};
+  return { row: upsertRow(b.sheet, b.columns || [], b.values || []) };
+}));
+app.post('/sync/remove', syncRoute(async (req) => {
+  const { removeRow } = await import('./services/sheetSync.js');
+  return { ok: removeRow(req.body?.sheet, req.body?.id) };
+}));
+
 app.use('/api', api);
 app.use(apiErrorHandler);
 

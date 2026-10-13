@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kkbuh-test-'));
 const PORT = 3400 + Math.floor(Math.random() * 500);
-const env = { ...process.env, DEV_MODE: '1', ADMIN_IDS: '111', DB_PATH: path.join(dir, 'db.sqlite'), PORT: String(PORT), BOT_TOKEN: '', WEBAPP_URL: '', TZ: 'Europe/Kyiv' };
+const env = { ...process.env, DEV_MODE: '1', ADMIN_IDS: '111', DB_PATH: path.join(dir, 'db.sqlite'), PORT: String(PORT), BOT_TOKEN: '', WEBAPP_URL: '', TZ: 'Europe/Kyiv', SHEET_SYNC_TOKEN: 'sync-secret-123' };
 const srv = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', 'src/index.js'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
 let log = '';
 srv.stdout.on('data', (d) => { log += d; });
@@ -206,6 +206,44 @@ try {
     assert.equal(r.created.length, 1);
     const r2 = await ok('POST', '/recurring/run');
     assert.equal(r2.created.length, 0);
+  });
+
+  await test('google sheet sync: token, export, create/update/remove rows', async () => {
+    const root = `http://127.0.0.1:${PORT}`;
+    const sync = async (method, p, body, token = 'sync-secret-123') => {
+      const r = await fetch(root + p, { method, headers: { 'x-sync-token': token, 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+      return { status: r.status, data: await r.json() };
+    };
+    assert.equal((await sync('GET', '/sync/export', null, 'wrong')).status, 401);
+    const ex = await sync('GET', '/sync/export');
+    assert.equal(ex.status, 200);
+    const cols = ex.data.operations.columns;
+    assert.ok(ex.data.operations.rows.length > 0);
+    const blank = Object.fromEntries(cols.map((c) => [c, '']));
+    const mk = (o) => cols.map((c) => ({ ...blank, ...o })[c]);
+    const created = await sync('POST', '/sync/row', { sheet: 'operations', columns: cols, values: mk({ 'Дата': '05.10.2026', 'Тип': 'Витрата', 'Сума': '1 250,50', 'Рахунок': 'Monobank ФОП', 'Категорія': 'Хостинг / домени', 'Проєкт': 'Новий з таблиці', 'Клієнт': 'Клієнт з таблиці', 'Коментар': 'з таблиці' }) });
+    assert.equal(created.status, 200, JSON.stringify(created.data));
+    const id = created.data.row[0];
+    assert.ok(id > 0);
+    assert.equal(created.data.row[4], 1250.5);
+    assert.equal(created.data.row[1], '2026-10-05');
+    const updated = await sync('POST', '/sync/row', { sheet: 'operations', columns: cols, values: mk({ ID: id, 'Дата': '2026-10-06', 'Тип': 'Витрата', 'Сума': 2000, 'Рахунок': 'Monobank ФОП', 'Коментар': 'змінено' }) });
+    assert.equal(updated.data.row[0], id);
+    assert.equal(updated.data.row[4], 2000);
+    const badAcc = await sync('POST', '/sync/row', { sheet: 'operations', columns: cols, values: mk({ 'Тип': 'Витрата', 'Сума': 10, 'Рахунок': 'Нема такого' }) });
+    assert.equal(badAcc.status, 400);
+    assert.match(badAcc.data.error, /Нема такого/);
+    const badCat = await sync('POST', '/sync/row', { sheet: 'operations', columns: cols, values: mk({ 'Тип': 'Дохід', 'Сума': 10, 'Рахунок': 'Monobank ФОП', 'Категорія': 'Податки' }) });
+    assert.equal(badCat.status, 400);
+    const pc = ex.data.projects.columns;
+    const prow = pc.map((c) => ({ 'Назва': 'Проєкт з таблиці', 'Клієнт': 'ABV', 'Статус': 'В роботі', 'Бюджет': '1500', 'Валюта': 'USD' })[c] ?? '');
+    const pr = await sync('POST', '/sync/row', { sheet: 'projects', columns: pc, values: prow });
+    assert.equal(pr.status, 200, JSON.stringify(pr.data));
+    assert.equal(pr.data.row[1], 'Проєкт з таблиці');
+    assert.equal(pr.data.row[5], 1500);
+    assert.equal((await sync('POST', '/sync/remove', { sheet: 'operations', id })).status, 200);
+    const t = await call('GET', `/transactions/${id}`);
+    assert.equal(t.status, 404);
   });
 
   await test('excel export works', async () => {

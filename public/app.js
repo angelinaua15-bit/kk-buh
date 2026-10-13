@@ -450,7 +450,7 @@ async function renderMore() {
     );
   }
   if (state.me.can.manageUsers) items.push(['users', 'Доступи']);
-  if (state.me.can.manageSettings) items.push(['requisites', '🏢 Реквізити для документів'], ['mono', '🏦 Monobank'], ['import', 'Імпорт таблиці'], ['settings', 'Налаштування'], ['audit', 'Журнал']);
+  if (state.me.can.manageSettings) items.push(['requisites', '🏢 Реквізити для документів'], ['sheet', '📗 Google-таблиця'], ['mono', '🏦 Monobank'], ['import', 'Імпорт таблиці'], ['settings', 'Налаштування'], ['audit', 'Журнал']);
   view().innerHTML = `<h1>Ще</h1>${items.map(([id,l]) => `<button class="list-btn" data-more="${id}"><span>${l}</span><span class="muted">›</span></button>`).join('')}`;
 }
 
@@ -848,13 +848,27 @@ async function renderMono() {
     <p class="muted">«Увімкнути миттєво» — Monobank сам надсилатиме кожну операцію. Без цього бот перевіряє виписку раз на 30 хв.</p>`;
 }
 
+async function renderSheet() {
+  const on = state.me.features?.sheet;
+  view().innerHTML = `<h1>Google-таблиця</h1>
+    <div class="card ${on ? 'ok' : 'warn'}">${on ? '✅ Синхронізацію на сервері увімкнено' : '⚠️ На сервері ще не задано SHEET_SYNC_TOKEN'}</div>
+    <div class="card"><b>Як підключити таблицю</b>
+      <ol class="muted">
+        <li>${on ? 'Токен уже є на сервері (SHEET_SYNC_TOKEN).' : 'Додай на сервері змінну <b>SHEET_SYNC_TOKEN</b> — будь-який довгий пароль.'}</li>
+        <li>У таблиці: Розширення → Apps Script, встав скрипт з репозиторію <b>docs/google-sheet-sync.gs</b>, збережи.</li>
+        <li>Онови таблицю → меню «🦍 KK Бот» → «Налаштувати»: адреса бота <b>${esc(location.origin)}</b> і той самий токен.</li>
+      </ol>
+      <p class="muted">Після цього аркуші «Операції (бот)» і «Проєкти (бот)» оновлюються кожні 10 хв, а будь-яка зміна рядка в таблиці одразу зберігається в боті.</p>
+    </div>`;
+}
+
 const screens = {
   dash: renderDash, tx: renderTx, projects: renderProjects, more: renderMore,
   clients: renderClients, team: renderTeam, pnl: renderPnl, upcoming: renderUpcoming,
   users: renderUsers, settings: renderSettings, audit: renderAudit, recurring: renderRecurring,
   import: renderImport,
   templates: renderTemplates, debts: renderDebts, forecast: renderForecast, taxes: renderTaxes,
-  payouts: renderPayouts, profit: renderProfit, requisites: renderRequisites, mono: renderMono,
+  payouts: renderPayouts, profit: renderProfit, requisites: renderRequisites, mono: renderMono, sheet: renderSheet,
   accounts: renderAccounts, categories: renderCategories,
 };
 
