@@ -34,7 +34,13 @@ import { appUrl, upsertTelegramUser } from './auth.js';
 import {
   ROLES, balances, can, createTx, dashboard, monthOf, setTxStatus, team, today, upcoming,
 } from './services/finance.js';
-import { baseCurrency, fmt } from './services/money.js';
+import { baseCurrency, convert, fmt } from './services/money.js';
+import { guessCategory, parseOperation } from './services/nlp.js';
+import { aiEnabled, readReceipt, transcribe } from './services/ai.js';
+import {
+  checkLimit, compare, debts, forecast, listTemplates, memberCabinet, payouts, reminderText, taxes, useTemplate, weeklyReport,
+} from './services/extras.js';
+import { dailyRates, makeBackup, monoEnabled, syncMono } from './services/integrations.js';
 
 export const bot = config.botToken
   ? new Bot(config.botToken, config.forceTelegramIp ? { client: { fetch: telegramFetch } } : {})
@@ -45,7 +51,12 @@ export const webAppKb = (user) => {
   const kb = new Keyboard();
   const url = appUrl(user?.tg_id);
   if (url) kb.webApp('🦍 Бухгалтерія KK', url).row();
-  kb.text('➕ Дохід').text('➖ Витрата').row().text('💼 Баланс').text('📊 Місяць').row().text('📅 План').text('👥 Команда');
+  kb.text('➕ Дохід').text('➖ Витрата').row();
+  if (user && can.seeAll(user)) {
+    kb.text('💼 Баланс').text('📊 Місяць').row().text('📌 Борги').text('📅 План').row().text('⚡ Шаблони').text('👥 Команда');
+  } else {
+    kb.text('👤 Мій кабінет').text('⚡ Шаблони');
+  }
   return kb.resized().persistent();
 };
 
@@ -191,7 +202,113 @@ if (bot) {
     '👥 Команда': 'team',
     '➕ Дохід': 'income',
     '➖ Витрата': 'expense',
+    '⚡ Шаблони': 'templates',
+    '📌 Борги': 'debts',
+    '👤 Мій кабінет': 'cabinet',
   };
+
+  bot.command('templates', (ctx) => needActive(ctx, ctx.kk) && sendTemplates(ctx));
+  bot.command('debts', (ctx) => needActive(ctx, ctx.kk) && sendDebts(ctx));
+  bot.command('my', (ctx) => needActive(ctx, ctx.kk) && sendCabinet(ctx));
+  bot.command('forecast', async (ctx) => {
+    if (!needActive(ctx, ctx.kk)) return;
+    if (!can.seeAll(ctx.kk)) return ctx.reply('Прогноз бачить адмін або фінансист.');
+    const f = forecast(4);
+    const lines = f.weeks.map((w) => `${w.end_balance < 0 ? '🔴' : '🟢'} ${w.from.slice(5)}–${w.to.slice(5)}: +${fmt(w.income, f.base)} / −${fmt(w.expense, f.base)} → <b>${fmt(w.end_balance, f.base)}</b>`);
+    await ctx.reply(`🔮 <b>Прогноз каси на 4 тижні</b>\nЗараз: ${fmt(f.start_balance, f.base)}\n\n${lines.join('\n')}\n\n${f.gap ? `⚠️ Касовий розрив: до ${fmt(f.min_balance, f.base)} близько ${f.min_date}` : '✅ Касового розриву не видно'}`, { parse_mode: 'HTML' });
+  });
+  bot.command('taxes', async (ctx) => {
+    if (!needActive(ctx, ctx.kk)) return;
+    if (!can.seeAll(ctx.kk)) return ctx.reply('Податки бачить адмін або фінансист.');
+    await ctx.reply(taxesText(taxes()), { parse_mode: 'HTML', reply_markup: appBtn(ctx.kk) });
+  });
+  bot.command('payouts', async (ctx) => {
+    if (!needActive(ctx, ctx.kk)) return;
+    if (!can.seeAll(ctx.kk)) return sendCabinet(ctx);
+    const p = payouts();
+    if (!p.people.length) return ctx.reply('Ставки команди ще не задані. Відкрий проєкт у Mini App → «Команда проєкту».', { reply_markup: appBtn(ctx.kk) });
+    await ctx.reply(`👥 <b>Виплати команді</b>\n\n${p.people.map((x) => `• ${esc(x.name)}: нараховано ${fmt(x.accrued, p.base)}, виплачено ${fmt(x.paid, p.base)}${x.planned ? `, заплановано ${fmt(x.planned, p.base)}` : ''} → <b>до виплати ${fmt(x.due, p.base)}</b>`).join('\n')}\n\nРазом до виплати: <b>${fmt(p.total_due, p.base)}</b>`, { parse_mode: 'HTML', reply_markup: appBtn(ctx.kk) });
+  });
+  bot.command('week', async (ctx) => {
+    if (!needActive(ctx, ctx.kk)) return;
+    if (!can.seeAll(ctx.kk)) return ctx.reply('Звіт бачить адмін або фінансист.');
+    await ctx.reply(weeklyReport(), { parse_mode: 'HTML' });
+  });
+  bot.command('compare', async (ctx) => {
+    if (!needActive(ctx, ctx.kk)) return;
+    if (!can.seeAll(ctx.kk)) return ctx.reply('Звіт бачить адмін або фінансист.');
+    await ctx.reply(compareText(compare()), { parse_mode: 'HTML' });
+  });
+  bot.command('backup', async (ctx) => {
+    if (!needActive(ctx, ctx.kk)) return;
+    if (!can.manageSettings(ctx.kk)) return ctx.reply('Бекап робить лише адмін.');
+    const { buffer, filename } = makeBackup();
+    await ctx.replyWithDocument(new InputFile(buffer, filename), { caption: '💾 Резервна копія бази' });
+  });
+
+  bot.callbackQuery(/^tpl:(\d+)$/, async (ctx) => {
+    const u = ctx.kk;
+    if (!u || u.status !== 'active') return ctx.answerCallbackQuery({ text: 'Немає доступу' });
+    try {
+      const tx = useTemplate(Number(ctx.match[1]), u);
+      afterTx(tx);
+      await ctx.answerCallbackQuery({ text: 'Записано' });
+      await ctx.reply(`${tx.type === 'income' ? '➕' : '➖'} ${fmt(tx.amount, tx.currency)} · ${esc(tx.comment || '')}${tx.status === 'pending' ? '\n⏳ На перевірці в адміна.' : ''}`, { parse_mode: 'HTML' });
+    } catch (e) {
+      await ctx.answerCallbackQuery({ text: (e.message || 'Помилка').slice(0, 190), show_alert: true });
+    }
+  });
+  bot.callbackQuery(/^rem:(\d+)$/, async (ctx) => {
+    if (!can.seeAll(ctx.kk || {})) return ctx.answerCallbackQuery({ text: 'Немає прав' });
+    const d = debts().find((x) => x.project_id === Number(ctx.match[1]));
+    if (!d) return ctx.answerCallbackQuery({ text: 'Боргу вже немає' });
+    await ctx.answerCallbackQuery();
+    await ctx.reply(`Скопіюй і надішли клієнту:\n\n<code>${esc(reminderText(d))}</code>`, { parse_mode: 'HTML' });
+  });
+
+  // чернетки операцій (з тексту, голосу, фото) — зберігаємо лише після «✅»
+  bot.callbackQuery(/^d:(save|type|acc|cancel):([\w-]+)$/, async (ctx) => {
+    const [, action, id] = ctx.match;
+    const d = drafts.get(id);
+    const u = ctx.kk;
+    if (!d || !u || d.userId !== u.id) return ctx.answerCallbackQuery({ text: 'Чернетка застаріла — надішли ще раз' });
+    if (action === 'cancel') {
+      drafts.delete(id);
+      await ctx.editMessageText('❌ Скасовано').catch(() => {});
+      return ctx.answerCallbackQuery();
+    }
+    if (action === 'type') {
+      d.data.type = d.data.type === 'income' ? 'expense' : 'income';
+      d.data.category_id = null;
+      d.data.category_name = null;
+      if (d.data.type === 'income') { d.data.member_id = null; d.data.member_name = null; }
+      const g = guessCategory(d.data.type, d.data.comment || '');
+      if (g) { d.data.category_id = g.id; d.data.category_name = g.name; }
+    }
+    if (action === 'acc') {
+      const accs = all('SELECT * FROM accounts WHERE archived = 0 ORDER BY sort, id');
+      if (accs.length) {
+        const i = accs.findIndex((a) => a.id === d.data.account_id);
+        const next = accs[(i + 1) % accs.length];
+        d.data.account_id = next.id;
+        d.data.account_name = next.name;
+        d.data.account_currency = next.currency;
+        d.data.currencyMismatch = d.data.currency !== next.currency && !(d.data.currency === 'USD' && next.currency === 'USDT');
+      }
+    }
+    if (action === 'save') {
+      try {
+        const tx = saveDraft(d, u);
+        drafts.delete(id);
+        await ctx.editMessageText(`✅ Збережено #${tx.id}\n${draftText(d.data)}${tx.status === 'pending' ? '\n\n⏳ На перевірці в адміна.' : ''}`, { parse_mode: 'HTML' }).catch(() => {});
+        return ctx.answerCallbackQuery({ text: 'Збережено' });
+      } catch (e) {
+        return ctx.answerCallbackQuery({ text: (e.message || 'Помилка').slice(0, 190), show_alert: true });
+      }
+    }
+    await ctx.editMessageText(`${draftText(d.data)}\n\nЗберегти?`, { parse_mode: 'HTML', reply_markup: draftKb(id, d.data) }).catch(() => {});
+    return ctx.answerCallbackQuery();
+  });
 
   bot.on('message:text', async (ctx, next) => {
     const t = ctx.message.text;
@@ -208,6 +325,7 @@ if (bot) {
       return ctx.reply(monthCard(dashboard(u)), { parse_mode: 'HTML', reply_markup: appBtn(u) });
     }
     if (textMap[t] === 'plan') {
+      if (!can.seeAll(u)) return sendCabinet(ctx);
       const rows = upcoming(21);
       if (!rows.length) return ctx.reply('Немає запланованих платежів на 3 тижні.');
       return ctx.reply(rows.map((x) => `${x.overdue ? '⚠️' : '📅'} ${x.date} · ${x.type === 'income' ? '+' : '−'}${fmt(x.amount, x.currency)} · ${esc(x.comment || x.category_name || '—')}`).join('\n'), { parse_mode: 'HTML' });
@@ -220,51 +338,56 @@ if (bot) {
       const paid = rows.filter((x) => x.paid_base);
       return ctx.reply(`👥 <b>Виплати ${m}</b>\n\n` + (paid.map((x) => `• ${esc(x.name)} — ${fmt(x.paid_base, baseCurrency())}`).join('\n') || 'Цього місяця виплат ще не було.'), { parse_mode: 'HTML' });
     }
+    if (textMap[t] === 'templates') return sendTemplates(ctx);
+    if (textMap[t] === 'debts') return sendDebts(ctx);
+    if (textMap[t] === 'cabinet') return sendCabinet(ctx);
     if (textMap[t] === 'income' || textMap[t] === 'expense') {
       pending.set(u.id, { type: textMap[t] });
-      return ctx.reply(`Напиши суму${textMap[t] === 'income' ? ' доходу' : ' витрати'} і коментар.\nНаприклад: <code>1200 сайт клієнта</code>`, { parse_mode: 'HTML' });
+      return ctx.reply(`Напиши${textMap[t] === 'income' ? ' дохід' : ' витрату'} як зручно, наприклад:\n<code>${textMap[t] === 'income' ? '500$ від ABV за сайт на ФОП' : '300 грн реклама в інсту'}</code>\nАбо надішли голосове 🎙`, { parse_mode: 'HTML' });
     }
 
-    const draft = pending.get(u.id);
-    const parsed = parseQuick(t, draft?.type);
+    const forced = pending.get(u.id)?.type;
+    const parsed = parseOperation(t, { forcedType: forced });
     if (parsed) {
-      try {
-        const acc = defaultAccount(parsed.currencyHint);
-        const tx = createTx({
-          type: parsed.type,
-          amount: parsed.amount,
-          account_id: acc?.id,
-          comment: parsed.comment,
-          date: today(),
-        }, u);
-        pending.delete(u.id);
-        const extra = tx.status === 'pending' ? '\n⏳ На перевірці в адміна.' : '';
-        return ctx.reply(`${tx.type === 'income' ? '➕' : '➖'} ${fmt(tx.amount, tx.currency)} · ${tx.comment || 'без коментаря'}${extra}`, { reply_markup: appBtn(u) });
-      } catch (e) {
-        return ctx.reply(e.message || 'Не вдалося зберегти. Відкрий Mini App.');
-      }
+      pending.delete(u.id);
+      return showDraft(ctx, u, parsed);
     }
-    if (/^\s*\d/.test(t)) {
-      return ctx.reply('Щоб записати операцію, почни з + (дохід) або − (витрата).\nНаприклад: <code>+1200 сайт клієнта</code> або <code>-300 реклама</code>.\nАбо натисни «➕ Дохід» / «➖ Витрата».', { parse_mode: 'HTML' });
+    if (/\d/.test(t)) {
+      return ctx.reply('Не зрозумів, це дохід чи витрата 🤔\nНапиши, наприклад: <code>+1200 сайт клієнта</code>, <code>-300 реклама</code> або «отримала 500$ від ABV».', { parse_mode: 'HTML' });
     }
     return next();
+  });
+
+  bot.on('message:voice', async (ctx) => {
+    const u = ctx.kk;
+    if (!needActive(ctx, u)) return;
+    if (!aiEnabled()) return ctx.reply('🎙 Голосовий ввід ще не увімкнено (адміну треба додати OPENAI_API_KEY). Напиши текстом: «500$ від ABV за сайт».');
+    if ((ctx.message.voice.duration || 0) > 120) return ctx.reply('Голосове задовге — до 2 хвилин, будь ласка.');
+    const wait = await ctx.reply('🎙 Слухаю…');
+    try {
+      const text = await transcribe(await downloadFile(ctx), 'voice.ogg');
+      const parsed = parseOperation(text, { forcedType: pending.get(u.id)?.type });
+      await bot.api.deleteMessage(ctx.chat.id, wait.message_id).catch(() => {});
+      if (!parsed) return ctx.reply(`Почув: «${esc(text)}»\nАле не знайшов суму або тип. Спробуй: «отримала 500 доларів від ABV за сайт».`, { parse_mode: 'HTML' });
+      pending.delete(u.id);
+      return showDraft(ctx, u, parsed, { heard: text });
+    } catch (e) {
+      await bot.api.deleteMessage(ctx.chat.id, wait.message_id).catch(() => {});
+      return ctx.reply(e.message || 'Не вдалося розпізнати голосове.');
+    }
   });
 
   bot.on('message:document', async (ctx) => {
     const u = ctx.kk;
     if (!needActive(ctx, u)) return;
-    if (!can.manageSettings(u)) return ctx.reply('Імпорт таблиці лише для адміна.');
     const doc = ctx.message.document;
     const name = doc.file_name || '';
+    if (/^image\//.test(doc.mime_type || '')) return handleReceipt(ctx, u, doc.file_id, doc.mime_type);
+    if (!can.manageSettings(u)) return ctx.reply('Імпорт таблиці лише для адміна.');
     if (!/\.(xlsx|xls|csv)$/i.test(name)) return ctx.reply('Надішли Excel (.xlsx) або CSV зі старої таблиці.');
     await ctx.reply('Імпортую таблицю…');
     try {
-      const file = await ctx.getFile();
-      const url = `https://api.telegram.org/file/bot${config.botToken}/${file.file_path}`;
-      const res = await (config.forceTelegramIp
-        ? telegramFetch(url)
-        : fetch(url));
-      const buf = Buffer.from(await res.arrayBuffer());
+      const buf = await downloadFile(ctx);
       const { importBuffer } = await import('./services/importSheet.js');
       const result = await importBuffer(buf, name, u);
       await ctx.reply(`Готово: імпортовано <b>${result.imported}</b>, пропущено ${result.skipped}.`, { parse_mode: 'HTML', reply_markup: appBtn(u) });
@@ -277,15 +400,16 @@ if (bot) {
     const u = ctx.kk;
     if (!needActive(ctx, u)) return;
     const fileId = ctx.message.photo.at(-1).file_id;
-    const last = get(
-      'SELECT id FROM transactions WHERE created_by = ? AND deleted_at IS NULL ORDER BY id DESC LIMIT 1',
-      u.id,
-    );
-    if (!last) return ctx.reply('Спочатку додай операцію (сумою або в Mini App), потім надішли фото чека.');
-    run('UPDATE transactions SET receipt_file_id = ? WHERE id = ?', fileId, last.id);
-    await ctx.reply(`🖼 Чек прикріплено до операції #${last.id}`);
+    const caption = ctx.message.caption || '';
+    if (caption) {
+      const parsed = parseOperation(caption, { forcedType: pending.get(u.id)?.type });
+      if (parsed) {
+        pending.delete(u.id);
+        return showDraft(ctx, u, parsed, { fileId });
+      }
+    }
+    return handleReceipt(ctx, u, fileId, 'image/jpeg');
   });
-
   bot.catch((err) => console.error('bot error', err.error || err));
 }
 
@@ -296,6 +420,180 @@ function esc(s) {
 export async function sendFile(chatId, buffer, filename, caption) {
   if (!bot) throw new Error('Бот не налаштований');
   await bot.api.sendDocument(chatId, new InputFile(buffer, filename), { caption });
+}
+
+const drafts = new Map();
+const DRAFT_TTL = 6 * 3600 * 1000;
+
+function draftId() {
+  return Math.random().toString(36).slice(2, 10);
+}
+
+function draftText(d) {
+  const sign = d.type === 'income' ? '➕ Дохід' : '➖ Витрата';
+  let money = fmt(d.amount, d.currency);
+  if (d.currencyMismatch && d.account_currency) {
+    try {
+      money += ` (≈ ${fmt(convert(d.amount, d.currency, d.account_currency), d.account_currency)} на рахунок)`;
+    } catch {
+      money += ' ⚠️ немає курсу';
+    }
+  }
+  return [
+    `${sign} · <b>${money}</b>`,
+    `💳 ${esc(d.account_name || 'рахунок не обрано')}`,
+    d.category_name ? `🏷 ${esc(d.category_name)}` : '🏷 без категорії',
+    d.client_name || d.project_name ? `👤 ${esc([d.client_name, d.project_name].filter(Boolean).join(' · '))}` : null,
+    d.member_name ? `👥 ${esc(d.member_name)}` : null,
+    `📅 ${d.date}`,
+    d.comment ? `💬 ${esc(d.comment)}` : null,
+  ].filter(Boolean).join('\n');
+}
+
+function draftKb(id, d) {
+  return new InlineKeyboard()
+    .text('✅ Зберегти', `d:save:${id}`).row()
+    .text(d.type === 'income' ? '↔️ Це витрата' : '↔️ Це дохід', `d:type:${id}`)
+    .text('💳 Інший рахунок', `d:acc:${id}`).row()
+    .text('❌ Скасувати', `d:cancel:${id}`);
+}
+
+async function showDraft(ctx, user, data, extra = {}) {
+  for (const [k, v] of drafts) if (Date.now() - v.at > DRAFT_TTL) drafts.delete(k);
+  const id = draftId();
+  drafts.set(id, { userId: user.id, data, fileId: extra.fileId || null, at: Date.now() });
+  const head = extra.heard ? `🎙 «${esc(extra.heard)}»\n\n` : extra.receipt ? '🧾 З чека:\n\n' : '';
+  return ctx.reply(`${head}${draftText(data)}\n\nЗберегти?`, { parse_mode: 'HTML', reply_markup: draftKb(id, data) });
+}
+
+function saveDraft(d, user) {
+  const x = d.data;
+  if (!x.account_id) throw new Error('Оберіть рахунок');
+  let amount = x.amount;
+  let comment = x.comment || '';
+  if (x.currencyMismatch && x.account_currency) {
+    amount = convert(x.amount, x.currency, x.account_currency);
+    comment = `${comment} (${fmt(x.amount, x.currency)})`.trim();
+  }
+  const tx = createTx({
+    type: x.type,
+    amount,
+    account_id: x.account_id,
+    category_id: x.category_id,
+    project_id: x.project_id,
+    client_id: x.client_id,
+    member_id: x.member_id,
+    date: x.date,
+    comment,
+    receipt_file_id: d.fileId || null,
+  }, user);
+  afterTx(tx);
+  if (tx.status === 'pending') {
+    notifyAdmins(`⏳ Нова операція на перевірку\n${tx.type === 'income' ? '➕' : '➖'} ${fmt(tx.amount, tx.currency)}\n${esc(tx.comment || '—')}\nвід ${esc(user.name)}`, {
+      reply_markup: new InlineKeyboard().text('✅ Провести', `ok:${tx.id}`).text('❌ Відхилити', `no:${tx.id}`),
+    }).catch(() => {});
+  }
+  return tx;
+}
+
+function afterTx(tx) {
+  try {
+    const alert = checkLimit(tx);
+    if (alert) notifyAdmins(alert.text).catch(() => {});
+  } catch (e) {
+    console.warn('limit', e.message || e);
+  }
+}
+
+async function downloadFile(ctx) {
+  const file = await ctx.getFile();
+  const url = `https://api.telegram.org/file/bot${config.botToken}/${file.file_path}`;
+  const res = await (config.forceTelegramIp ? telegramFetch(url) : fetch(url));
+  if (!res.ok) throw new Error('Не вдалося завантажити файл з Telegram');
+  return Buffer.from(await res.arrayBuffer());
+}
+
+async function handleReceipt(ctx, u, fileId, mime) {
+  if (aiEnabled()) {
+    const wait = await ctx.reply('🧾 Читаю чек…');
+    try {
+      const r = await readReceipt(await downloadFile(ctx), mime);
+      await bot.api.deleteMessage(ctx.chat.id, wait.message_id).catch(() => {});
+      if (r) {
+        const parsed = parseOperation(`${r.type === 'income' ? '+' : '-'}${r.amount / 100} ${r.currency} ${r.title || ''}`) || null;
+        if (parsed) {
+          if (r.date) parsed.date = r.date;
+          return showDraft(ctx, u, parsed, { fileId, receipt: true });
+        }
+      }
+      await ctx.reply('Не знайшов суму на фото. Додай підпис до фото, наприклад «-450 грн хостинг».');
+    } catch (e) {
+      await bot.api.deleteMessage(ctx.chat.id, wait.message_id).catch(() => {});
+      await ctx.reply(e.message || 'Не вдалося прочитати чек.');
+    }
+    return;
+  }
+  const last = get('SELECT id FROM transactions WHERE created_by = ? AND deleted_at IS NULL ORDER BY id DESC LIMIT 1', u.id);
+  if (!last) return ctx.reply('Додай підпис до фото, наприклад «-450 грн хостинг», — і я запишу операцію з чеком.');
+  run('UPDATE transactions SET receipt_file_id = ? WHERE id = ?', fileId, last.id);
+  await ctx.reply(`🖼 Чек прикріплено до операції #${last.id}.\nПорада: підпис до фото («-450 грн хостинг») одразу створить нову операцію.`);
+}
+
+async function sendTemplates(ctx) {
+  const list = listTemplates();
+  if (!list.length) return ctx.reply('Шаблонів ще немає. Створи їх у Mini App → Ще → Шаблони (оренда, підписки, виплати…).', { reply_markup: appBtn(ctx.kk) });
+  const kb = new InlineKeyboard();
+  list.slice(0, 30).forEach((t, i) => {
+    kb.text(`${t.emoji} ${t.title} · ${fmt(t.amount, t.currency)}`.slice(0, 60), `tpl:${t.id}`);
+    if (i % 1 === 0) kb.row();
+  });
+  return ctx.reply('⚡ Тапни — і операція запишеться сьогоднішньою датою:', { reply_markup: kb });
+}
+
+async function sendDebts(ctx) {
+  if (!can.seeAll(ctx.kk)) return ctx.reply('Борги бачить адмін або фінансист.');
+  const list = debts();
+  if (!list.length) return ctx.reply('🎉 Боргів клієнтів немає.');
+  const base = baseCurrency();
+  const total = list.reduce((s, d) => s + d.left_base, 0);
+  await ctx.reply(`📌 <b>Борги клієнтів</b> — разом ≈ ${fmt(total, base)}`, { parse_mode: 'HTML' });
+  for (const d of list.slice(0, 10)) {
+    await ctx.reply(
+      `${d.overdue_days ? '🔴' : '🟡'} <b>${esc(d.client_name || 'без клієнта')}</b> · ${esc(d.project_name)}\n`
+      + `Оплачено ${fmt(d.paid, d.currency)} з ${fmt(d.budget, d.currency)}\nЗалишок: <b>${fmt(d.left, d.currency)}</b>`
+      + `${d.deadline ? `\nТермін: ${d.deadline}${d.overdue_days ? ` (прострочено ${d.overdue_days} дн.)` : ''}` : ''}`,
+      { parse_mode: 'HTML', reply_markup: new InlineKeyboard().text('📨 Текст нагадування', `rem:${d.project_id}`) },
+    );
+  }
+}
+
+async function sendCabinet(ctx) {
+  const c = memberCabinet(ctx.kk);
+  const lines = c.projects.map((p) => `• ${esc(p.project_name)} (${p.kind === 'pct' ? `${p.value}%` : fmt(p.value, p.currency)}): нараховано ${fmt(p.accrued, c.base)}, виплачено ${fmt(p.paid, c.base)} → <b>${fmt(p.due, c.base)}</b>`);
+  await ctx.reply(
+    `👤 <b>Мій кабінет</b>\n\nВиплачено цього місяця: <b>${fmt(c.paid_month, c.base)}</b>\n`
+    + `Нараховано всього: ${fmt(c.accrued, c.base)}\nВиплачено всього: ${fmt(c.paid, c.base)}\n`
+    + `${c.planned ? `Заплановано: ${fmt(c.planned, c.base)}\n` : ''}До виплати: <b>${fmt(c.due, c.base)}</b>`
+    + `${c.pending ? `\nНа перевірці: ${c.pending}` : ''}${lines.length ? `\n\n${lines.join('\n')}` : ''}`,
+    { parse_mode: 'HTML', reply_markup: appBtn(ctx.kk) },
+  );
+}
+
+function taxesText(t) {
+  if (!t.enabled) return 'Податки вимкнено в налаштуваннях (Ще → Податки ФОП).';
+  const lines = t.items.slice(0, 8).map((i) => `${i.paid ? '✅' : i.days_left < 0 ? '🔴' : i.days_left <= 7 ? '🟡' : '•'} ${esc(i.title)} — <b>${fmt(i.amount, 'UAH')}</b> до ${i.due}${i.paid ? ' (сплачено)' : i.days_left < 0 ? ' (прострочено)' : ` (${i.days_left} дн.)`}`);
+  const q = t.quarters[1];
+  return `🧾 <b>Податки ФОП · ${t.settings.group} група</b>\n\nДохід ${q.quarter}: ${fmt(q.income, 'UAH')}\n`
+    + `Дохід з початку року: ${fmt(t.ytd_income, 'UAH')}${t.limit ? ` (${t.limit_pct}% ліміту)` : ''}\n\n${lines.join('\n')}`;
+}
+
+function compareText(c) {
+  const p = (n) => (n === null ? '—' : `${n > 0 ? '+' : ''}${n}%`);
+  return `📈 <b>Порівняння · ${c.current.month}</b>\n\n`
+    + `Доходи: <b>${fmt(c.current.income, c.base)}</b> · до мин. міс. ${p(c.vs_previous.income)} · до року тому ${p(c.vs_year_ago.income)}\n`
+    + `Витрати: <b>${fmt(c.current.expense, c.base)}</b> · ${p(c.vs_previous.expense)} · ${p(c.vs_year_ago.expense)}\n`
+    + `Прибуток: <b>${fmt(c.current.profit, c.base)}</b> · ${p(c.vs_previous.profit)} · ${p(c.vs_year_ago.profit)}\n\n`
+    + `З початку року: прибуток ${fmt(c.ytd.profit, c.base)} (торік за той самий період ${fmt(c.ytd_prev.profit, c.base)})`;
 }
 
 function monthCard(d) {
@@ -312,25 +610,6 @@ function monthCard(d) {
     (d.pendingCount ? `⏳ На перевірці: ${d.pendingCount}\n` : '') +
     (d.receivable ? `📌 Борг клієнтів ≈ ${fmt(d.receivable, d.base)}` : '')
   );
-}
-
-function parseQuick(text, forcedType) {
-  const m = text.match(/^\s*([+\-])?\s*(\d+(?:[.,]\d{1,2})?)\s*(uah|грн|usd|\$|eur|€|usdt|₮)?\s*(.*)$/i);
-  if (!m) return null;
-  const type = forcedType || (m[1] === '-' ? 'expense' : m[1] === '+' ? 'income' : null);
-  if (!type) return null;
-  const amount = Math.round(Number(m[2].replace(',', '.')) * 100);
-  if (!(amount > 0)) return null;
-  const hint = { uah: 'UAH', грн: 'UAH', usd: 'USD', $: 'USD', eur: 'EUR', '€': 'EUR', usdt: 'USDT', '₮': 'USDT' }[(m[3] || '').toLowerCase()];
-  return { type, amount, currencyHint: hint, comment: (m[4] || '').trim() };
-}
-
-function defaultAccount(currency) {
-  if (currency) {
-    const a = get('SELECT * FROM accounts WHERE archived=0 AND currency=? ORDER BY sort LIMIT 1', currency);
-    if (a) return a;
-  }
-  return get('SELECT * FROM accounts WHERE archived=0 ORDER BY sort LIMIT 1');
 }
 
 export async function notifyAdmins(html, extra = {}) {
@@ -361,6 +640,15 @@ export async function startBot() {
       { command: 'balance', description: 'Баланси рахунків' },
       { command: 'report', description: 'Звіт за місяць' },
       { command: 'pending', description: 'Операції на перевірці' },
+      { command: 'debts', description: 'Борги клієнтів' },
+      { command: 'forecast', description: 'Прогноз каси на 4 тижні' },
+      { command: 'taxes', description: 'Податки ФОП' },
+      { command: 'payouts', description: 'Виплати команді' },
+      { command: 'my', description: 'Мій кабінет' },
+      { command: 'templates', description: 'Шаблони операцій' },
+      { command: 'week', description: 'Звіт за тиждень' },
+      { command: 'compare', description: 'Порівняння з минулим місяцем і роком' },
+      { command: 'backup', description: 'Резервна копія бази' },
     ]);
     const url = appUrl();
     if (url) {
@@ -402,25 +690,84 @@ export async function startBot() {
   setup().catch((e) => console.error('bot setup', e.message || e));
 }
 
+/** Планувальник: щохвилини перевіряє, чи настав час для кожної задачі (у часовому поясі компанії). */
 export function scheduleJobs() {
+  const once = (key, stamp) => {
+    if (getSetting(key) === stamp) return false;
+    setSetting(key, stamp);
+    return true;
+  };
   const tick = async () => {
     const now = new Date();
-    const kyivH = Number(new Intl.DateTimeFormat('en-GB', { timeZone: config.timezone, hour: '2-digit', hour12: false }).format(now));
-    const kyivM = Number(new Intl.DateTimeFormat('en-GB', { timeZone: config.timezone, minute: '2-digit' }).format(now));
-    const stamp = today();
-    if (kyivH >= 9 && getSetting('last_recurring') !== stamp) {
-      setSetting('last_recurring', stamp);
-      const { runRecurring } = await import('./services/finance.js');
-      try { tick.created = runRecurring(); } catch (e) { console.warn('recurring', e.message || e); tick.created = []; }
+    const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', {
+      timeZone: config.timezone, hour: '2-digit', minute: '2-digit', weekday: 'short', hour12: false,
+    }).formatToParts(now).map((p) => [p.type, p.value]));
+    const h = Number(parts.hour) % 24;
+    const m = Number(parts.minute);
+    const day = today();
+
+    // курси НБУ — щодня з 10:00 (і одразу після старту, якщо сьогодні ще не оновлювали)
+    if (getSetting('rates_day') !== day && (!scheduleJobs.ratesTried || m % 30 === 0)) {
+      scheduleJobs.ratesTried = true;
+      try { await dailyRates(); } catch (e) { console.warn('rates', e.message || e); }
     }
-    if (kyivH === 9 && kyivM < 10 && getSetting('last_digest') !== stamp && getSetting('daily_digest') === '1') {
-      setSetting('last_digest', stamp);
-      const created = tick.created || [];
+
+    // регулярні платежі — щодня з 9:00
+    let created = [];
+    if (h >= 9 && once('last_recurring', day)) {
+      const { runRecurring } = await import('./services/finance.js');
+      try { created = runRecurring(); } catch (e) { console.warn('recurring', e.message || e); }
+    }
+
+    // ранковий дайджест + борги + податки — о 9:00
+    if (h === 9 && m < 15 && getSetting('daily_digest') === '1' && once('last_digest', day)) {
       const d = dashboard({ role: 'admin', id: 0 });
       if (!d.limited) {
         await notifyAdmins('🗓 <b>Ранковий дайджест</b>\n\n' + monthCard(d) + (created.length ? `\n\n🔁 Створено регулярних: ${created.length}` : ''), { silent: true });
       }
+      const overdue = debts().filter((x) => x.overdue_days > 0 && [1, 3, 7, 14, 30].includes(x.overdue_days));
+      for (const x of overdue) {
+        await notifyAdmins(`🔴 <b>Прострочена оплата</b>\n${esc(x.client_name || '')} · ${esc(x.project_name)}\nЗалишок: <b>${fmt(x.left, x.currency)}</b> (${x.overdue_days} дн.)`, {
+          reply_markup: new InlineKeyboard().text('📨 Текст нагадування', `rem:${x.project_id}`),
+        });
+      }
+      const t = taxes();
+      for (const i of t.enabled ? t.items : []) {
+        if (!i.paid && [7, 3, 1].includes(i.days_left)) {
+          await notifyAdmins(`🧾 Через ${i.days_left} дн. (${i.due}) сплатити: <b>${esc(i.title)}</b> — ${fmt(i.amount, 'UAH')}`);
+        }
+      }
+    }
+
+    // тижневий звіт — пʼятниця 18:00
+    if (parts.weekday === 'Fri' && h === 18 && m < 15 && once('last_weekly', day)) {
+      await notifyAdmins(weeklyReport(day));
+    }
+
+    // бекап бази — щодня о 23:30 адмінам у чат
+    if (h === 23 && m >= 30 && once('last_backup', day) && bot) {
+      try {
+        const { buffer, filename } = makeBackup();
+        const admins = all("SELECT tg_id FROM users WHERE role='admin' AND status='active' AND tg_id IS NOT NULL");
+        for (const a of admins) {
+          await bot.api.sendDocument(a.tg_id, new InputFile(buffer, filename), { caption: '💾 Щоденна резервна копія бази', disable_notification: true }).catch(() => {});
+        }
+      } catch (e) {
+        console.warn('backup', e.message || e);
+      }
+    }
+
+    // Monobank без вебхука — підтягуємо виписку раз на 30 хв
+    if (monoEnabled() && !getSetting('mono_webhook_url') && m % 30 === 0 && once('last_mono_poll', `${day}-${h}-${m}`)) {
+      syncMono(1).then((r) => r.created.length && notifyAdmins(`🏦 Monobank: нових операцій — ${r.created.length}`)).catch((e) => console.warn('mono', e.message || e));
     }
   };
-  setInterval(() => tick().catch((e) => console.warn('tick', e.message || e)), 60_000);
+  let busy = false;
+  const run = () => {
+    if (busy) return;
+    busy = true;
+    tick().catch((e) => console.warn('tick', e.message || e)).finally(() => { busy = false; });
+  };
+  setTimeout(run, 5000);
+  setInterval(run, 60_000);
 }

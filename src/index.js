@@ -34,6 +34,26 @@ if (bot) {
   });
 }
 
+// Monobank: GET — перевірка адреси при встановленні вебхука, POST — нова операція
+app.get('/mono/webhook/:secret', (_req, res) => res.sendStatus(200));
+app.post('/mono/webhook/:secret', async (req, res) => {
+  res.sendStatus(200);
+  try {
+    const { getSetting } = await import('./db.js');
+    if (req.params.secret !== getSetting('mono_webhook_secret')) return;
+    const b = req.body || {};
+    if (b.type !== 'StatementItem' || !b.data?.statementItem) return;
+    const { importMonoItem } = await import('./services/integrations.js');
+    const t = importMonoItem(b.data.account, b.data.statementItem);
+    if (t) {
+      const { fmt } = await import('./services/money.js');
+      notifyAdmins(`🏦 Monobank: ${t.type === 'income' ? '➕' : '➖'} ${fmt(t.amount, t.currency)} · ${String(t.comment || '').replace(/[<>&]/g, '')}${t.category_name ? `\n🏷 ${t.category_name}` : '\n🏷 без категорії — признач у Mini App'}`, { silent: true }).catch(() => {});
+    }
+  } catch (e) {
+    console.warn('mono webhook', e.message || e);
+  }
+});
+
 app.get('/health', (_req, res) => res.json({
   ok: true,
   webAppUrl: config.webAppUrl || null,

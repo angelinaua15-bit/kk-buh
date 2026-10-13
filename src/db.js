@@ -156,6 +156,76 @@ CREATE INDEX IF NOT EXISTS audit_created ON audit(created_at);
 
 db.exec(SCHEMA);
 
+/* ───── v2: шаблони, ставки команди, рахунки-фактури, Monobank ───── */
+db.exec(`
+CREATE TABLE IF NOT EXISTS templates (
+  id INTEGER PRIMARY KEY,
+  title TEXT NOT NULL,
+  emoji TEXT DEFAULT '⚡',
+  type TEXT NOT NULL CHECK (type IN ('income','expense')),
+  amount INTEGER NOT NULL,
+  account_id INTEGER REFERENCES accounts(id) ON DELETE SET NULL,
+  category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
+  project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+  client_id INTEGER REFERENCES clients(id) ON DELETE SET NULL,
+  member_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  comment TEXT,
+  sort INTEGER NOT NULL DEFAULT 0,
+  archived INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS project_members (
+  id INTEGER PRIMARY KEY,
+  project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL DEFAULT 'pct' CHECK (kind IN ('pct','fixed')),
+  value REAL NOT NULL DEFAULT 0,
+  currency TEXT,
+  role TEXT,
+  UNIQUE(project_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS documents (
+  id INTEGER PRIMARY KEY,
+  kind TEXT NOT NULL CHECK (kind IN ('invoice','act')),
+  number TEXT NOT NULL,
+  project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+  client_id INTEGER REFERENCES clients(id) ON DELETE SET NULL,
+  date TEXT NOT NULL,
+  amount INTEGER NOT NULL,
+  currency TEXT NOT NULL,
+  description TEXT,
+  created_by INTEGER,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS mono_seen (
+  id TEXT PRIMARY KEY,
+  account TEXT,
+  tx_id INTEGER,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS alerts_sent (
+  key TEXT PRIMARY KEY,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+`);
+
+function addColumn(table, col, ddl) {
+  const cols = all(`PRAGMA table_info(${table})`).map((c) => c.name);
+  if (!cols.includes(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+}
+addColumn('projects', 'work_type', 'work_type TEXT');
+addColumn('projects', 'payment_method', 'payment_method TEXT');
+addColumn('clients', 'tg_username', 'tg_username TEXT');
+addColumn('accounts', 'mono_account', 'mono_account TEXT');
+addColumn('users', 'default_pct', 'default_pct REAL');
+addColumn('clients', 'legal_name', 'legal_name TEXT');
+addColumn('clients', 'legal_code', 'legal_code TEXT');
+addColumn('clients', 'address', 'address TEXT');
+
+
 export function getSetting(key, def = null) {
   const r = get('SELECT value FROM settings WHERE key = ?', key);
   return r ? r.value : def;

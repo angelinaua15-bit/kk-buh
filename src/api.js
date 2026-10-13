@@ -10,6 +10,13 @@ import {
 } from './services/finance.js';
 import { baseCurrency, currencies, fmt, fromMinor, refreshRatesFromNBU, setRate } from './services/money.js';
 import { importBuffer } from './services/importSheet.js';
+import {
+  checkLimit, compare, debts, forecast, listTemplates, memberCabinet, payouts, planPayouts, planTaxes,
+  profitability, projectMembers, reminderText, saveTaxSettings, saveTemplate, setProjectMember, taxes, useTemplate,
+} from './services/extras.js';
+import { createDocument, listDocuments, renderDocument, requisites, saveRequisites } from './services/documents.js';
+import { linkMonoAccount, makeBackup, monoAccounts, monoEnabled, setMonoWebhook, syncMono } from './services/integrations.js';
+import { aiEnabled } from './services/ai.js';
 
 const api = Router();
 const guard = (check, msg = 'Недостатньо прав') => (req, res, next) => (check(req.user) ? next() : res.status(403).json({ error: msg }));
@@ -31,6 +38,27 @@ api.get('/launch', (_req, res) => {
 
 api.use(authMiddleware);
 
+const seeAll = guard(can.seeAll, 'Цей розділ бачить лише адмін або фінансист');
+
+/** Попередження про ліміти категорій — адмінам у Telegram. */
+function afterTx(t) {
+  try {
+    const alert = checkLimit(t);
+    if (alert) import('./bot.js').then(({ notifyAdmins }) => notifyAdmins(alert.text)).catch(() => {});
+  } catch (e) {
+    console.warn('limit check', e.message || e);
+  }
+}
+async function sendToChat(user, buffer, filename, caption) {
+  if (!user.tg_id) throw new HttpError(400, 'Немає Telegram-чату для надсилання');
+  const { sendFile } = await import('./bot.js');
+  try {
+    await sendFile(user.tg_id, buffer, filename, caption);
+  } catch (e) {
+    throw new HttpError(400, `Не вдалося надіслати в Telegram: ${e.message || e}`);
+  }
+}
+
 api.get('/me', (req, res) => {
   res.json({
     user: req.user,
@@ -43,6 +71,7 @@ api.get('/me', (req, res) => {
       member_sees_all: getSetting('member_sees_all') === '1',
       member_needs_approval: getSetting('member_needs_approval') === '1',
     },
+    features: { ai: aiEnabled(), mono: monoEnabled(), sheet: Boolean(config.syncToken) },
   });
 });
 
@@ -69,6 +98,7 @@ api.get('/transactions/:id', (req, res) => {
 });
 api.post('/transactions', async (req, res) => {
   const t = createTx(req.body, req.user);
+  afterTx(t);
   if (t.status === 'pending') {
     const { notifyAdmins } = await import('./bot.js');
     const { fmt } = await import('./services/money.js');
@@ -78,7 +108,11 @@ api.post('/transactions', async (req, res) => {
   }
   res.status(201).json(t);
 });
-api.patch('/transactions/:id', (req, res) => res.json(updateTx(needId(req), req.body, req.user)));
+api.patch('/transactions/:id', (req, res) => {
+  const t = updateTx(needId(req), req.body, req.user);
+  afterTx(t);
+  res.json(t);
+});
 api.delete('/transactions/:id', (req, res) => {
   deleteTx(needId(req), req.user);
   res.json({ ok: true });
@@ -86,8 +120,8 @@ api.delete('/transactions/:id', (req, res) => {
 api.post('/transactions/:id/status', guard(can.approve), (req, res) => res.json(setTxStatus(needId(req), req.body.status, req.user)));
 api.post('/transactions/:id/restore', guard(can.writeAnyTx), (req, res) => res.json(restoreTx(needId(req), req.user)));
 
-api.get('/reports/balances', (req, res) => res.json(balances({ includeArchived: req.query.all === '1' })));
-api.get('/reports/categories', (req, res) => {
+api.get('/reports/balances', seeAll, (req, res) => res.json(balances({ includeArchived: req.query.all === '1' })));
+api.get('/reports/categories', seeAll, (req, res) => {
   const [from, to] = req.query.from && req.query.to ? [req.query.from, req.query.to] : monthBounds(req.query.month || monthOf(today()));
   res.json({
     from,
@@ -97,15 +131,36 @@ api.get('/reports/categories', (req, res) => {
     series: monthlySeries(12, from.slice(0, 7)),
   });
 });
-api.get('/reports/pnl', (req, res) => res.json(pnl(Number(req.query.year) || Number(today().slice(0, 4)))));
-api.get('/reports/upcoming', (req, res) => res.json(upcoming(Number(req.query.days) || 45)));
+api.get('/reports/pnl', seeAll, (req, res) => res.json(pnl(Number(req.query.year) || Number(today().slice(0, 4)))));
+api.get('/reports/upcoming', seeAll, (req, res) => res.json(upcoming(Number(req.query.days) || 45)));
 
-api.get('/projects', (req, res) => res.json(projects(req.query)));
+const MONEY_FIELDS = ['budget', 'budget_base', 'income_base', 'expense_base', 'planned_base', 'profit_base', 'debt_base', 'paid_pct', 'margin_pct'];
+function visibleProjects(user, query = {}) {
+  const rows = projects(query);
+  if (can.seeAll(user)) return rows;
+  const mine = new Set([
+    ...all('SELECT project_id FROM project_members WHERE user_id=?', user.id).map((r) => r.project_id),
+    ...all('SELECT DISTINCT project_id FROM transactions WHERE (member_id=? OR created_by=?) AND project_id IS NOT NULL', user.id, user.id).map((r) => r.project_id),
+  ]);
+  return rows.filter((p) => mine.has(p.id)).map((p) => {
+    const o = { ...p, limited: true };
+    for (const k of MONEY_FIELDS) delete o[k];
+    return o;
+  });
+}
+api.get('/projects', (req, res) => res.json(visibleProjects(req.user, req.query)));
 api.get('/projects/:id', (req, res) => {
-  const p = projects().find((x) => x.id === needId(req));
+  const p = visibleProjects(req.user).find((x) => x.id === needId(req));
   if (!p) return res.status(404).json({ error: 'Не знайдено' });
   const txs = listTx({ project_id: p.id, limit: 200 }, req.user).rows;
-  res.json({ ...p, transactions: txs });
+  res.json({ ...p, transactions: txs, members: projectMembers(p.id), documents: can.seeAll(req.user) ? listDocuments(p.id) : [] });
+});
+api.get('/projects/:id/members', seeAll, (req, res) => res.json(projectMembers(needId(req))));
+api.post('/projects/:id/members', guard(can.writeRefs), (req, res) => {
+  const id = needId(req);
+  const list = setProjectMember(id, req.body || {});
+  audit(req.user.id, 'members', 'project', id, req.body);
+  res.json(list);
 });
 const needName = (b, field = 'name') => {
   if (!String(b?.[field] || '').trim()) throw new HttpError(400, 'Вкажіть назву');
@@ -115,9 +170,9 @@ api.post('/projects', guard(can.writeRefs), (req, res) => {
   const b = req.body;
   needName(b);
   const r = run(
-    'INSERT INTO projects(name, client_id, status, budget, currency, manager_id, start_date, deadline, notes) VALUES(?,?,?,?,?,?,?,?,?)',
-    b.name, b.client_id || null, b.status || 'active', Math.round(Number(b.budget) || 0), b.currency || 'USD',
-    b.manager_id || null, b.start_date || null, b.deadline || null, b.notes || null,
+    'INSERT INTO projects(name, client_id, status, budget, currency, manager_id, start_date, deadline, notes, work_type, payment_method) VALUES(?,?,?,?,?,?,?,?,?,?,?)',
+    String(b.name).trim(), b.client_id || null, b.status || 'active', Math.round(Number(b.budget) || 0), b.currency || 'USD',
+    b.manager_id || null, b.start_date || null, b.deadline || null, b.notes || null, b.work_type || null, b.payment_method || null,
   );
   const id = Number(r.lastInsertRowid);
   audit(req.user.id, 'create', 'project', id, b);
@@ -129,19 +184,20 @@ api.patch('/projects/:id', guard(can.writeRefs), (req, res) => {
   if (!cur) return res.status(404).json({ error: 'Не знайдено' });
   const b = { ...cur, ...req.body };
   run(
-    'UPDATE projects SET name=?, client_id=?, status=?, budget=?, currency=?, manager_id=?, start_date=?, deadline=?, notes=? WHERE id=?',
+    'UPDATE projects SET name=?, client_id=?, status=?, budget=?, currency=?, manager_id=?, start_date=?, deadline=?, notes=?, work_type=?, payment_method=? WHERE id=?',
     b.name, b.client_id || null, b.status, Math.round(Number(b.budget) || 0), b.currency,
-    b.manager_id || null, b.start_date || null, b.deadline || null, b.notes || null, id,
+    b.manager_id || null, b.start_date || null, b.deadline || null, b.notes || null, b.work_type || null, b.payment_method || null, id,
   );
   audit(req.user.id, 'update', 'project', id, b);
   res.json(get('SELECT * FROM projects WHERE id=?', id));
 });
 
-api.get('/clients', (req, res) => res.json(clients()));
+api.get('/clients', seeAll, (req, res) => res.json(clients()));
 api.post('/clients', guard(can.writeRefs), (req, res) => {
   const b = req.body;
   needName(b);
-  const r = run('INSERT INTO clients(name, contact, phone, email, notes) VALUES(?,?,?,?,?)', b.name, b.contact || null, b.phone || null, b.email || null, b.notes || null);
+  const r = run('INSERT INTO clients(name, contact, phone, email, notes, tg_username, legal_name, legal_code, address) VALUES(?,?,?,?,?,?,?,?,?)',
+    String(b.name).trim(), b.contact || null, b.phone || null, b.email || null, b.notes || null, b.tg_username || null, b.legal_name || null, b.legal_code || null, b.address || null);
   res.status(201).json(get('SELECT * FROM clients WHERE id=?', r.lastInsertRowid));
 });
 api.patch('/clients/:id', guard(can.writeRefs), (req, res) => {
@@ -149,11 +205,12 @@ api.patch('/clients/:id', guard(can.writeRefs), (req, res) => {
   const cur = get('SELECT * FROM clients WHERE id=?', id);
   if (!cur) return res.status(404).json({ error: 'Не знайдено' });
   const b = { ...cur, ...req.body };
-  run('UPDATE clients SET name=?, contact=?, phone=?, email=?, notes=?, archived=? WHERE id=?', b.name, b.contact, b.phone, b.email, b.notes, Number(!!b.archived), id);
+  run('UPDATE clients SET name=?, contact=?, phone=?, email=?, notes=?, archived=?, tg_username=?, legal_name=?, legal_code=?, address=? WHERE id=?',
+    b.name, b.contact, b.phone, b.email, b.notes, Number(!!b.archived), b.tg_username || null, b.legal_name || null, b.legal_code || null, b.address || null, id);
   res.json(get('SELECT * FROM clients WHERE id=?', id));
 });
 
-api.get('/team', (req, res) => {
+api.get('/team', seeAll, (req, res) => {
   const [from, to] = req.query.from && req.query.to ? [req.query.from, req.query.to] : monthBounds(req.query.month || monthOf(today()));
   res.json({ from, to, members: team(from, to) });
 });
@@ -294,11 +351,100 @@ api.get('/export.xlsx', async (req, res) => {
 api.post('/export/send', async (req, res) => {
   const from = req.body?.from || `${today().slice(0, 4)}-01-01`;
   const to = req.body?.to || today();
-  if (!req.user.tg_id) throw new HttpError(400, 'Немає Telegram-чату для надсилання');
   const buf = await buildWorkbook({ from, to, user: req.user });
-  const { sendFile } = await import('./bot.js');
-  await sendFile(req.user.tg_id, Buffer.from(buf), `KKLab_${from}_${to}.xlsx`, `📊 Звіт ${from} — ${to}`);
+  await sendToChat(req.user, Buffer.from(buf), `KKLab_${from}_${to}.xlsx`, `📊 Звіт ${from} — ${to}`);
   res.json({ ok: true });
+});
+
+/* ───── Шаблони ───── */
+api.get('/templates', (req, res) => res.json(listTemplates()));
+api.post('/templates', guard(can.writeRefs), (req, res) => res.status(201).json(saveTemplate(req.body || {})));
+api.patch('/templates/:id', guard(can.writeRefs), (req, res) => {
+  const id = needId(req);
+  const cur = get('SELECT * FROM templates WHERE id=?', id);
+  if (!cur) return res.status(404).json({ error: 'Не знайдено' });
+  res.json(saveTemplate({ ...cur, ...req.body }, id));
+});
+api.post('/templates/:id/use', (req, res) => {
+  const t = useTemplate(needId(req), req.user, req.body || {});
+  afterTx(t);
+  res.status(201).json(t);
+});
+
+/* ───── Борги, прогноз, податки ───── */
+api.get('/debts', seeAll, (req, res) => res.json(debts().map((d) => ({ ...d, reminder: reminderText(d) }))));
+api.get('/forecast', seeAll, (req, res) => res.json(forecast(Math.min(Math.max(Number(req.query.weeks) || 4, 1), 12))));
+api.get('/taxes', seeAll, (req, res) => res.json(taxes()));
+api.post('/taxes/settings', guard(can.manageSettings), (req, res) => res.json(saveTaxSettings(req.body || {})));
+api.post('/taxes/plan', guard(can.writeRefs), (req, res) => res.json({ created: planTaxes(req.user, req.body?.account_id).length }));
+
+/* ───── Команда ───── */
+api.get('/payouts', seeAll, (req, res) => res.json(payouts()));
+api.post('/payouts/plan', guard(can.writeRefs), (req, res) => {
+  const ids = Array.isArray(req.body?.user_ids) ? req.body.user_ids.map(Number) : null;
+  res.json({ created: planPayouts(req.user, req.body?.account_id, ids).length });
+});
+api.get('/cabinet', (req, res) => res.json(memberCabinet(req.user)));
+api.get('/profitability', seeAll, (req, res) => {
+  const [from, to] = req.query.from && req.query.to ? [req.query.from, req.query.to] : [`${today().slice(0, 4)}-01-01`, today()];
+  res.json(profitability(from, to));
+});
+api.get('/compare', seeAll, (req, res) => res.json(compare(/^\d{4}-\d{2}$/.test(req.query.month || '') ? req.query.month : monthOf(today()))));
+
+/* ───── Документи ───── */
+api.get('/requisites', guard(can.writeRefs), (req, res) => res.json(requisites()));
+api.post('/requisites', guard(can.manageSettings), (req, res) => res.json(saveRequisites(req.body || {})));
+api.get('/documents', seeAll, (req, res) => res.json(listDocuments(Number(req.query.project_id) || null)));
+api.post('/documents', guard(can.writeRefs), async (req, res) => {
+  const { doc, buffer } = await createDocument(req.body || {}, req.user);
+  audit(req.user.id, 'create', 'document', doc.id, doc);
+  let sent = false;
+  if (req.body?.send !== false && req.user.tg_id) {
+    try { await sendToChat(req.user, buffer, `${doc.number}.pdf`, `${doc.kind === 'invoice' ? '🧾 Рахунок' : '📄 Акт'} ${doc.number}`); sent = true; } catch (e) { console.warn('doc send', e.message); }
+  }
+  res.status(201).json({ ...doc, sent });
+});
+api.get('/documents/:id.pdf', seeAll, async (req, res) => {
+  const doc = get('SELECT * FROM documents WHERE id=?', needId(req));
+  if (!doc) return res.status(404).json({ error: 'Не знайдено' });
+  const buf = await renderDocument(doc);
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(doc.number)}.pdf"`);
+  res.send(buf);
+});
+api.post('/documents/:id/send', seeAll, async (req, res) => {
+  const doc = get('SELECT * FROM documents WHERE id=?', needId(req));
+  if (!doc) return res.status(404).json({ error: 'Не знайдено' });
+  await sendToChat(req.user, await renderDocument(doc), `${doc.number}.pdf`, doc.number);
+  res.json({ ok: true });
+});
+
+/* ───── Monobank, бекап ───── */
+api.get('/mono', guard(can.manageSettings), async (req, res) => {
+  if (!monoEnabled()) return res.json({ enabled: false });
+  res.json({ enabled: true, ...(await monoAccounts()), last_sync: getSetting('mono_last_sync'), webhook: getSetting('mono_webhook_url') });
+});
+api.post('/mono/link', guard(can.manageSettings), (req, res) => {
+  const b = req.body || {};
+  if (!b.mono_id) throw new HttpError(400, 'Оберіть рахунок Monobank');
+  res.json({ account_id: linkMonoAccount(String(b.mono_id), b.account_id, b) });
+});
+api.post('/mono/sync', guard(can.manageSettings), (req, res) => {
+  const days = Math.min(Number(req.body?.days) || 3, 30);
+  syncMono(days).then(async (r) => {
+    const { notifyUser } = await import('./bot.js');
+    notifyUser(req.user.tg_id, `🏦 Monobank: додано операцій — <b>${r.created.length}</b>${r.errors.length ? `\n⚠️ ${r.errors.join('; ')}` : ''}`);
+  }).catch((e) => console.warn('mono sync', e.message));
+  res.json({ started: true });
+});
+api.post('/mono/webhook', guard(can.manageSettings), async (req, res) => {
+  if (!config.webAppUrl) throw new HttpError(400, 'Немає публічної адреси (WEBAPP_URL)');
+  res.json({ url: await setMonoWebhook(config.webAppUrl) });
+});
+api.post('/backup', guard(can.manageSettings), async (req, res) => {
+  const { buffer, filename } = makeBackup();
+  await sendToChat(req.user, buffer, filename, '💾 Резервна копія бази');
+  res.json({ ok: true, size: buffer.length });
 });
 
 api.get('/search', (req, res) => {

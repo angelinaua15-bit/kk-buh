@@ -189,13 +189,22 @@ async function renderDash() {
   const d = state.dash;
   const v = view();
   if (d.limited) {
-    v.innerHTML = `${monthNav()}<div class="kpis">
-      <div class="kpi wide"><div class="l">Мої виплати</div><div class="v">${money(d.payouts, d.base)}</div></div>
-      <div class="kpi"><div class="l">За рік</div><div class="v">${money(d.yearPayouts, d.base)}</div></div>
-      <div class="kpi"><div class="l">На перевірці</div><div class="v">${d.pending}</div></div>
-    </div><h2>Останні</h2><div class="card">${d.recent.map(txRow).join('') || '<div class="empty">Поки порожньо</div>'}</div>`;
+    const c = await api('/cabinet');
+    const tpls = await api('/templates').catch(() => []);
+    v.innerHTML = `<h1>Мій кабінет</h1><div class="kpis">
+      <div class="kpi wide"><div class="l">До виплати</div><div class="v">${money(c.due, c.base)}</div></div>
+      <div class="kpi"><div class="l">Виплачено цього місяця</div><div class="v">${money(c.paid_month, c.base)}</div></div>
+      <div class="kpi"><div class="l">Нараховано всього</div><div class="v">${money(c.accrued, c.base)}</div></div>
+      <div class="kpi"><div class="l">Виплачено всього</div><div class="v">${money(c.paid, c.base)}</div></div>
+      <div class="kpi"><div class="l">На перевірці</div><div class="v">${c.pending}</div></div>
+    </div>
+    ${templatesRow(tpls)}
+    ${c.projects.length ? `<h2>Мої проєкти</h2><div class="card">${c.projects.map((p) => `<div class="row"><span>${esc(p.project_name)}<br><span class="muted">${p.kind === 'pct' ? p.value + '%' : money(p.value, p.currency)} · нараховано ${money(p.accrued, c.base)}</span></span><b>${money(p.due, c.base)}</b></div>`).join('')}</div>` : ''}
+    ${c.upcoming.length ? `<h2>Заплановані виплати</h2><div class="card">${c.upcoming.map((t) => `<div class="row"><span>📅 ${t.date} · ${esc(t.project_name || t.comment || '')}</span><b>${money(t.amount, t.currency)}</b></div>`).join('')}</div>` : ''}
+    <h2>Останні</h2><div class="card">${c.recent.map(txRow).join('') || '<div class="empty">Поки порожньо</div>'}</div>`;
     return;
   }
+  const [tpls, cmp] = await Promise.all([api('/templates').catch(() => []), api('/compare?month=' + state.month).catch(() => null)]);
   const series = d.series || [];
   const max = Math.max(1, ...series.map((s) => s.income + s.expense));
   const bars = series.map((s) => {
@@ -212,6 +221,8 @@ async function renderDash() {
       <div class="kpi"><div class="l">Прибуток</div><div class="v">${signed(d.current.profit, d.base)}</div></div>
       <div class="kpi"><div class="l">Борг клієнтів</div><div class="v">${money(d.receivable, d.base)}</div></div>
     </div>
+    ${cmp ? compareChips(cmp) : ''}
+    ${templatesRow(tpls)}
     <h2>12 місяців</h2>
     <div class="card"><div class="bars">${bars}</div><div class="muted">фіолет — доходи, рожевий — витрати</div></div>
     <h2>Рахунки</h2>
@@ -223,6 +234,24 @@ async function renderDash() {
     <div class="card">${(d.upcoming || []).map((t) => `<div class="row"><span>${t.overdue ? '⚠️' : '📅'} ${t.date} · ${esc(t.comment || t.category_name || '')}</span><b>${signed(t.type === 'income' ? t.amount : -t.amount, t.currency)}</b></div>`).join('') || '<div class="muted">Немає</div>'}</div>
     <h2>Останні операції</h2>
     <div class="card">${(d.recent || []).map(txRow).join('') || '<div class="empty">Поки немає операцій — натисни +</div>'}</div>`;
+}
+
+function pctChip(n, invert = false) {
+  if (n === null || n === undefined) return '<span class="muted">—</span>';
+  const good = invert ? n <= 0 : n >= 0;
+  return `<span class="${good ? 'plus' : 'minus'}">${n > 0 ? '▲' : n < 0 ? '▼' : '='} ${Math.abs(n)}%</span>`;
+}
+function compareChips(c) {
+  return `<div class="card cmp">
+    <div class="row"><span class="muted">до мин. місяця</span><span class="muted">до року тому</span></div>
+    <div class="row"><span>Доходи ${pctChip(c.vs_previous.income)}</span><span>${pctChip(c.vs_year_ago.income)}</span></div>
+    <div class="row"><span>Витрати ${pctChip(c.vs_previous.expense, true)}</span><span>${pctChip(c.vs_year_ago.expense, true)}</span></div>
+    <div class="row"><span>Прибуток ${pctChip(c.vs_previous.profit)}</span><span>${pctChip(c.vs_year_ago.profit)}</span></div>
+  </div>`;
+}
+function templatesRow(list) {
+  if (!list?.length) return '';
+  return `<h2>Швидкі операції</h2><div class="tpl-row">${list.slice(0, 12).map((t) => `<button class="tpl" data-tpl="${t.id}"><span>${esc(t.emoji || '⚡')}</span><b>${esc(t.title)}</b><small>${money(t.amount, t.currency)}</small></button>`).join('')}</div>`;
 }
 
 async function renderTx() {
@@ -321,7 +350,7 @@ async function openTx(id) {
 async function renderProjects() {
   const rows = await api('/projects');
   view().innerHTML = `<div class="row"><h1>Проєкти</h1>${state.me.can.writeRefs ? '<button class="chip" data-act="new-project">+ Проєкт</button>' : ''}</div>
-    ${rows.map((p) => `<div class="card" data-project="${p.id}">
+    ${rows.map((p) => p.limited ? `<div class="card" data-project="${p.id}"><div class="row"><b>${esc(p.name)}</b><span class="tag">${PSTATUS[p.status] || p.status}</span></div><div class="muted">${esc(p.client_name || '')}${p.deadline ? ' · до ' + p.deadline : ''}</div></div>` : `<div class="card" data-project="${p.id}">
       <div class="row"><b>${esc(p.name)}</b><span class="tag">${PSTATUS[p.status] || p.status}</span></div>
       <div class="muted">${esc(p.client_name || 'без клієнта')} · бюджет ${money(p.budget, p.currency)}</div>
       <div class="row"><span class="muted">Отримано ${p.paid_pct ?? 0}%</span><b>${signed(p.profit_base, state.boot.base)}</b></div>
@@ -338,6 +367,10 @@ function projectForm(p = {}) {
       <label>Статус<select name="status">${Object.entries(PSTATUS).map(([k,v])=>`<option value="${k}" ${p.status===k?'selected':''}>${v}</option>`).join('')}</select></label>
       <label>Бюджет<input name="budget" type="number" step="0.01" value="${p.budget?p.budget/100:''}"></label>
       <label>Валюта<select name="currency">${['USD','UAH','EUR','USDT'].map((c)=>`<option ${ (p.currency||'USD')===c?'selected':''}>${c}</option>`).join('')}</select></label>
+      <label>Тип роботи<input name="work_type" list="workTypes" value="${esc(p.work_type||'')}" placeholder="Сайт, бот, таргет, SEO…"></label>
+      <datalist id="workTypes">${['Сайт','Лендінг','Telegram-бот','Mini App','Таргет','SEO','Дизайн','Підтримка'].map((x)=>`<option value="${x}">`).join('')}</datalist>
+      <label>Спосіб оплати<input name="payment_method" value="${esc(p.payment_method||'')}" placeholder="ФОП, картка, крипта…"></label>
+      <label>Початок<input name="start_date" type="date" value="${p.start_date||''}"></label>
       <label>Дедлайн<input name="deadline" type="date" value="${p.deadline||''}"></label>
       <label>Нотатки<textarea name="notes" rows="2">${esc(p.notes||'')}</textarea></label>
       <button class="btn">Зберегти</button>
@@ -346,12 +379,48 @@ function projectForm(p = {}) {
 
 async function openProject(id) {
   const p = id ? await api('/projects/' + id) : {};
+  if (p.limited) {
+    openModal(`<div class="handle"></div><h3>${esc(p.name)}</h3><div class="muted">${esc(p.client_name || '')} · ${PSTATUS[p.status] || p.status}</div>
+      <h2>Мої операції</h2><div class="card">${(p.transactions || []).map(txRow).join('') || '<div class="empty">Немає</div>'}</div>`);
+    return;
+  }
+  const canEdit = state.me.can.writeRefs;
+  const team = p.id ? `<h2>Команда проєкту</h2><div class="card" id="pmList">${(p.members || []).map((m) => `<div class="row"><span>${esc(m.name)}</span><span><b>${m.kind === 'pct' ? m.value + '%' : money(m.value, p.currency)}</b>${canEdit ? ` <button class="chip" data-pm-del="${m.user_id}">✕</button>` : ''}</span></div>`).join('') || '<div class="muted">Ще нікого. Додай людину зі ставкою — бот сам порахує виплати.</div>'}
+      ${canEdit ? `<form class="pm-add" id="pmForm"><select name="user_id">${selectOpts(state.boot.members, '', (m) => m.name, 'Людина')}</select>
+        <select name="kind"><option value="pct">%</option><option value="fixed">сума</option></select>
+        <input name="value" type="number" step="0.01" min="0" placeholder="30" required><button class="chip">+</button></form>` : ''}</div>` : '';
+  const docs = p.id && canEdit ? `<h2>Документи</h2><div class="btns"><button type="button" class="btn ghost" data-doc="invoice">🧾 Рахунок</button><button type="button" class="btn ghost" data-doc="act">📄 Акт</button></div>
+      ${(p.documents || []).length ? `<div class="card" style="margin-top:8px">${p.documents.map((d) => `<div class="row"><span>${esc(d.number)} · ${d.date}</span><button class="chip" data-doc-send="${d.id}">Надіслати</button></div>`).join('')}</div>` : ''}` : '';
   const extra = p.transactions ? `<h2>Операції</h2><div class="card">${p.transactions.map(txRow).join('') || '<div class="empty">Немає</div>'}</div>` : '';
-  openModal(projectForm(p) + extra, (el) => {
+  openModal(projectForm(p) + team + docs + extra, (el) => {
+    el.querySelector('#pmForm')?.addEventListener('submit', (e) => safe(async () => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      if (!fd.get('user_id')) return toast('Оберіть людину');
+      const kind = fd.get('kind');
+      const value = kind === 'fixed' ? formNum(fd, 'value') : Number(String(fd.get('value')).replace(',', '.'));
+      await api(`/projects/${p.id}/members`, { method: 'POST', body: { user_id: Number(fd.get('user_id')), kind, value } });
+      toast('Додано'); openProject(p.id);
+    }));
+    el.querySelectorAll('[data-pm-del]').forEach((b) => b.addEventListener('click', () => safe(async () => {
+      await api(`/projects/${p.id}/members`, { method: 'POST', body: { user_id: Number(b.dataset.pmDel), remove: true } });
+      openProject(p.id);
+    })));
+    el.querySelectorAll('[data-doc]').forEach((b) => b.addEventListener('click', () => safe(async () => {
+      const d = await api('/documents', { method: 'POST', body: { kind: b.dataset.doc, project_id: p.id } });
+      if (d.sent) toast(`${d.number} надіслано в чат з ботом`);
+      else openPdf(d.id);
+      openProject(p.id);
+    })));
+    el.querySelectorAll('[data-doc-send]').forEach((b) => b.addEventListener('click', () => safe(async () => {
+      if (!inTelegram()) return openPdf(Number(b.dataset.docSend));
+      await api(`/documents/${b.dataset.docSend}/send`, { method: 'POST' });
+      toast('Надіслано в чат з ботом');
+    })));
     el.querySelector('#pForm').onsubmit = async (e) => {
       e.preventDefault();
       const fd = new FormData(e.target);
-      const body = { name: fd.get('name'), client_id: formId(fd,'client_id'), status: fd.get('status'), budget: formNum(fd,'budget')||0, currency: fd.get('currency'), deadline: fd.get('deadline')||null, notes: fd.get('notes') };
+      const body = { name: fd.get('name'), client_id: formId(fd,'client_id'), status: fd.get('status'), budget: formNum(fd,'budget')||0, currency: fd.get('currency'), start_date: fd.get('start_date')||null, deadline: fd.get('deadline')||null, notes: fd.get('notes'), work_type: fd.get('work_type')||null, payment_method: fd.get('payment_method')||null };
       try {
         if (p.id) await api('/projects/' + p.id, { method: 'PATCH', body });
         else await api('/projects', { method: 'POST', body });
@@ -362,17 +431,26 @@ async function openProject(id) {
 }
 
 async function renderMore() {
-  const items = [
-    ['clients', 'Клієнти'],
-    ['team', 'Команда / виплати'],
-    ['pnl', 'P&L за рік'],
-    ['upcoming', 'Календар платежів'],
-    ['recurring', 'Регулярні'],
-    ['accounts', 'Рахунки'],
-    ['categories', 'Категорії'],
-  ];
+  const all = state.me.can.writeRefs || state.me.user.role === 'viewer';
+  const items = [['templates', '⚡ Шаблони операцій']];
+  if (all) {
+    items.push(
+      ['debts', '📌 Борги клієнтів'],
+      ['forecast', '🔮 Прогноз каси'],
+      ['taxes', '🧾 Податки ФОП'],
+      ['payouts', '👥 Виплати команді'],
+      ['profit', '💹 Прибутковість'],
+      ['clients', 'Клієнти'],
+      ['team', 'Команда'],
+      ['pnl', 'P&L за рік'],
+      ['upcoming', 'Календар платежів'],
+      ['recurring', 'Регулярні'],
+      ['accounts', 'Рахунки'],
+      ['categories', 'Категорії та ліміти'],
+    );
+  }
   if (state.me.can.manageUsers) items.push(['users', 'Доступи']);
-  if (state.me.can.manageSettings) items.push(['import', 'Імпорт таблиці'], ['settings', 'Налаштування'], ['audit', 'Журнал']);
+  if (state.me.can.manageSettings) items.push(['requisites', '🏢 Реквізити для документів'], ['mono', '🏦 Monobank'], ['import', 'Імпорт таблиці'], ['settings', 'Налаштування'], ['audit', 'Журнал']);
   view().innerHTML = `<h1>Ще</h1>${items.map(([id,l]) => `<button class="list-btn" data-more="${id}"><span>${l}</span><span class="muted">›</span></button>`).join('')}`;
 }
 
@@ -415,6 +493,10 @@ function openClient(c = {}) {
       <label>Контактна особа<input name="contact" value="${esc(c.contact || '')}"></label>
       <label>Телефон<input name="phone" type="tel" value="${esc(c.phone || '')}"></label>
       <label>Email<input name="email" type="email" value="${esc(c.email || '')}"></label>
+      <label>Telegram<input name="tg_username" value="${esc(c.tg_username || '')}" placeholder="@username"></label>
+      <label>Юр. назва (для рахунків)<input name="legal_name" value="${esc(c.legal_name || '')}"></label>
+      <label>ЄДРПОУ / ІПН<input name="legal_code" value="${esc(c.legal_code || '')}"></label>
+      <label>Адреса<input name="address" value="${esc(c.address || '')}"></label>
       <label>Нотатки<textarea name="notes" rows="2">${esc(c.notes || '')}</textarea></label>
       ${c.id ? `<label class="switch">Архів <input type="checkbox" name="archived" ${c.archived ? 'checked' : ''}></label>` : ''}
       <button class="btn">Зберегти</button>
@@ -422,7 +504,7 @@ function openClient(c = {}) {
     el.querySelector('#refForm').onsubmit = async (e) => {
       e.preventDefault();
       const fd = new FormData(e.target);
-      const body = { name: fd.get('name'), contact: fd.get('contact'), phone: fd.get('phone'), email: fd.get('email'), notes: fd.get('notes'), archived: fd.get('archived') === 'on' };
+      const body = { name: fd.get('name'), contact: fd.get('contact'), phone: fd.get('phone'), email: fd.get('email'), notes: fd.get('notes'), archived: fd.get('archived') === 'on', tg_username: fd.get('tg_username'), legal_name: fd.get('legal_name'), legal_code: fd.get('legal_code'), address: fd.get('address') };
       try {
         if (c.id) await api('/clients/' + c.id, { method: 'PATCH', body });
         else await api('/clients', { method: 'POST', body });
@@ -517,7 +599,7 @@ async function renderAccounts() {
 async function renderCategories() {
   const rows = await api('/categories');
   view().innerHTML = `<div class="row"><h1>Категорії</h1>${state.me.can.writeRefs?'<button class="chip" data-act="new-cat">+</button>':''}</div>
-    ${rows.map((c) => `<div class="card" data-cat="${dataJson(c)}"><div class="row"><b>${esc(c.emoji+' '+c.name)}</b><span class="tag">${c.kind==='income'?'дохід':'витрата'}</span></div></div>`).join('')}`;
+    ${rows.map((c) => `<div class="card" data-cat="${dataJson(c)}"><div class="row"><b>${esc(c.emoji+' '+c.name)}</b><span class="tag">${c.kind==='income'?'дохід':'витрата'}</span></div>${c.monthly_limit ? `<div class="muted">ліміт ${money(c.monthly_limit, state.boot.base)} / міс.</div>` : ''}</div>`).join('')}`;
 }
 
 async function renderUsers() {
@@ -572,6 +654,8 @@ async function renderSettings() {
     <label class="switch">Ранковий дайджест адміну <input type="checkbox" name="daily_digest" ${s.daily_digest?'checked':''}></label>
     <button class="btn">Зберегти</button>
     <button type="button" class="btn ghost" id="nbu">Оновити курси НБУ</button>
+    <button type="button" class="btn ghost" id="backupBtn">💾 Бекап бази в чат</button>
+    <p class="muted">Бекап також приходить адмінам щодня о 23:30, тижневий звіт — у пʼятницю о 18:00.</p>
   </form>`;
 }
 
@@ -587,11 +671,190 @@ async function renderRecurring() {
       <div class="muted">${TYPE[r.type]} · ${(r.amount/100)} · ${esc(r.account_name||'')} · ${esc(r.category_name||'')}</div></div>`).join('') || '<div class="empty">Немає шаблонів</div>'}`;
 }
 
+function openPdf(id) {
+  const url = `/api/documents/${id}.pdf`;
+  fetch(url, { headers: authHeaders() }).then((r) => {
+    if (!r.ok) throw new Error('Не вдалося відкрити PDF');
+    return r.blob();
+  }).then((b) => window.open(URL.createObjectURL(b), '_blank')).catch((e) => toast(e.message));
+}
+
+async function renderTemplates() {
+  const rows = await api('/templates');
+  view().innerHTML = `<div class="row"><h1>Шаблони</h1>${state.me.can.writeRefs ? '<button class="chip" data-act="new-tpl">+</button>' : ''}</div>
+    <p class="muted">Часті операції в один тап: оренда, підписки, виплати. Також доступні в боті — кнопка «⚡ Шаблони».</p>
+    ${templatesRow(rows) || '<div class="empty">Шаблонів ще немає</div>'}
+    ${state.me.can.writeRefs ? rows.map((t) => `<div class="card" data-tpl-edit="${dataJson(t)}"><div class="row"><b>${esc((t.emoji || '⚡') + ' ' + t.title)}</b><span>${money(t.amount, t.currency)}</span></div><div class="muted">${TYPE[t.type]} · ${esc(t.account_name || '')}${t.category_name ? ' · ' + esc(t.category_name) : ''}</div></div>`).join('') : ''}`;
+}
+function openTemplate(t = {}) {
+  const accs = (state.boot.accounts || []).filter((a) => !a.archived);
+  const type = t.type || 'expense';
+  openModal(`<div class="handle"></div><h3>${t.id ? 'Шаблон' : 'Новий шаблон'}</h3>
+    <form class="form" id="refForm">
+      <div class="seg" id="typeSeg">${['expense','income'].map((k)=>`<button type="button" data-type="${k}" class="${type===k?'on':''}">${TYPE[k]}</button>`).join('')}</div>
+      <label>Назва<input name="title" required value="${esc(t.title||'')}" placeholder="Оренда офісу"></label>
+      <label>Емодзі<input name="emoji" value="${esc(t.emoji||'⚡')}"></label>
+      <label>Сума<input name="amount" type="number" step="0.01" required value="${t.amount?t.amount/100:''}"></label>
+      <label>Рахунок<select name="account_id" required>${selectOpts(accs, t.account_id, (a)=>`${a.emoji} ${a.name} · ${a.currency}`, 'Оберіть')}</select></label>
+      <label>Категорія<select name="category_id">${selectOpts((state.boot.categories||[]).filter((c)=>!c.archived&&c.kind===type), t.category_id)}</select></label>
+      <label>Проєкт<select name="project_id">${selectOpts(state.boot.projects, t.project_id)}</select></label>
+      <label>Член команди<select name="member_id">${selectOpts(state.boot.members, t.member_id)}</select></label>
+      <label>Коментар<input name="comment" value="${esc(t.comment||'')}"></label>
+      ${t.id ? `<label class="switch">Архів <input type="checkbox" name="archived" ${t.archived?'checked':''}></label>` : ''}
+      <button class="btn">Зберегти</button>
+    </form>`, (el) => {
+    el.querySelector('#typeSeg').addEventListener('click', (e) => {
+      const b = e.target.closest('[data-type]');
+      if (!b) return;
+      el.querySelectorAll('#typeSeg button').forEach((x) => x.classList.toggle('on', x === b));
+      el.querySelector('[name=category_id]').innerHTML = selectOpts((state.boot.categories||[]).filter((c)=>!c.archived&&c.kind===b.dataset.type), '');
+    });
+    el.querySelector('#refForm').onsubmit = (e) => safe(async () => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const body = { title: fd.get('title'), emoji: fd.get('emoji'), type: el.querySelector('#typeSeg .on')?.dataset.type || 'expense', amount: formNum(fd,'amount'), account_id: formId(fd,'account_id'), category_id: formId(fd,'category_id'), project_id: formId(fd,'project_id'), member_id: formId(fd,'member_id'), comment: fd.get('comment'), archived: fd.get('archived') === 'on' };
+      if (t.id) await api('/templates/' + t.id, { method: 'PATCH', body });
+      else await api('/templates', { method: 'POST', body });
+      closeModal(); toast('Збережено'); refresh();
+    });
+  });
+}
+
+async function renderDebts() {
+  const rows = await api('/debts');
+  const total = rows.reduce((s, d) => s + d.left_base, 0);
+  view().innerHTML = `<h1>Борги клієнтів</h1>
+    <div class="kpis"><div class="kpi wide"><div class="l">Разом · ${state.boot.base}</div><div class="v">${money(total, state.boot.base)}</div></div></div>
+    ${rows.map((d) => `<div class="card">
+      <div class="row"><b>${esc(d.client_name || 'без клієнта')}</b>${d.overdue_days ? `<span class="tag red">прострочено ${d.overdue_days} дн.</span>` : d.deadline ? `<span class="tag">до ${d.deadline}</span>` : ''}</div>
+      <div class="muted">${esc(d.project_name)}</div>
+      <div class="row"><span class="muted">Оплачено ${money(d.paid, d.currency)} з ${money(d.budget, d.currency)}</span><b class="minus">${money(d.left, d.currency)}</b></div>
+      <div class="progress"><b style="width:${Math.min(100, Math.round(d.paid / d.budget * 100))}%"></b></div>
+      <div class="btns" style="margin-top:10px"><button class="btn ghost" data-copy="${esc(d.reminder)}">📋 Текст нагадування</button><button class="btn ghost" data-project="${d.project_id}">Проєкт</button></div>
+    </div>`).join('') || '<div class="empty">🎉 Боргів немає</div>'}`;
+}
+
+async function renderForecast() {
+  const f = await api('/forecast?weeks=' + (state.fWeeks || 4));
+  const max = Math.max(1, ...f.weeks.map((w) => Math.abs(w.end_balance)), Math.abs(f.start_balance));
+  view().innerHTML = `<div class="row"><h1>Прогноз каси</h1><div>${[2,4,8].map((n)=>`<button class="chip ${ (state.fWeeks||4)===n?'on':''}" data-weeks="${n}">${n} тиж.</button>`).join('')}</div></div>
+    <div class="kpis">
+      <div class="kpi"><div class="l">Зараз</div><div class="v">${money(f.start_balance, f.base)}</div></div>
+      <div class="kpi"><div class="l">Мінімум</div><div class="v ${f.gap ? 'minus' : ''}">${money(f.min_balance, f.base)}</div></div>
+    </div>
+    ${f.gap ? `<div class="card warn">⚠️ Касовий розрив близько ${f.min_date}: на рахунках буде ${money(f.min_balance, f.base)}. Перенеси витрати або прискор оплати клієнтів.</div>` : '<div class="card ok">✅ Касового розриву не видно</div>'}
+    <div class="card"><div class="fbars">${f.weeks.map((w) => `<span title="${w.to}"><i class="${w.end_balance < 0 ? 'neg' : ''}" style="height:${Math.max(4, Math.abs(w.end_balance) / max * 100)}%"></i><small>${w.to.slice(5)}</small></span>`).join('')}</div></div>
+    ${f.weeks.map((w) => `<div class="card"><div class="row"><b>${w.from.slice(5)} — ${w.to.slice(5)}</b><b class="${w.end_balance < 0 ? 'minus' : ''}">${money(w.end_balance, f.base)}</b></div>
+      <div class="muted">+${money(w.income, f.base)} · −${money(w.expense, f.base)}</div>
+      ${w.items.map((x) => `<div class="row sub"><span>${x.overdue ? '⚠️' : '•'} ${x.date.slice(5)} ${esc(x.comment || '')}</span><span>${signed(x.type === 'income' ? x.amount : -x.amount, x.currency)}</span></div>`).join('')}</div>`).join('')}
+    <p class="muted">Враховано: залишки на рахунках, заплановані операції (і прострочені) та регулярні платежі.</p>`;
+}
+
+async function renderTaxes() {
+  const t = await api('/taxes');
+  const s = t.settings;
+  const accs = (state.boot.accounts || []).filter((a) => !a.archived);
+  const q = t.quarters?.[1];
+  view().innerHTML = `<h1>Податки ФОП</h1>
+    ${t.enabled ? `<div class="kpis">
+      <div class="kpi"><div class="l">Дохід ${esc(q.quarter)}</div><div class="v">${money(q.income, 'UAH')}</div></div>
+      <div class="kpi"><div class="l">З початку року</div><div class="v">${money(t.ytd_income, 'UAH')}</div></div>
+      ${t.limit ? `<div class="kpi wide"><div class="l">Ліміт ${s.group} групи використано</div><div class="v ${t.limit_pct >= 90 ? 'minus' : ''}">${t.limit_pct}%</div><div class="progress"><b style="width:${Math.min(100, t.limit_pct)}%"></b></div></div>` : ''}
+    </div>
+    <h2>До сплати</h2><div class="card">${t.items.map((i) => `<div class="row"><span>${i.paid ? '✅' : i.days_left < 0 ? '🔴' : i.days_left <= 7 ? '🟡' : '•'} ${esc(i.title)}<br><span class="muted">до ${i.due}${i.paid ? ' · сплачено' : i.planned ? ' · в плані' : i.days_left < 0 ? ' · прострочено' : ` · ${i.days_left} дн.`}</span></span><b>${money(i.amount, 'UAH')}</b></div>`).join('') || '<div class="muted">Нічого</div>'}</div>
+    ${state.me.can.writeRefs ? `<button class="btn" data-act="plan-taxes">Додати в план платежів</button>` : ''}` : '<div class="card">Розрахунок податків вимкнено.</div>'}
+    ${state.me.can.manageSettings ? `<h2>Налаштування</h2><form class="form card" id="taxForm">
+      <label>Група<select name="group">${[['3','3 група'],['2','2 група'],['1','1 група'],['none','не рахувати']].map(([v,l])=>`<option value="${v}" ${s.group===v?'selected':''}>${l}</option>`).join('')}</select></label>
+      <label>Єдиний податок, % (3 гр.)<input name="tax_rate" type="number" step="0.1" value="${s.tax_rate}"></label>
+      <label>Військовий збір, % (3 гр.)<input name="military_rate" type="number" step="0.1" value="${s.military_rate}"></label>
+      <label>ЄП фіксований, грн/міс (1–2 гр.)<input name="group_fixed" type="number" step="0.01" value="${s.group_fixed/100}"></label>
+      <label>ВЗ фіксований, грн/міс (1–2 гр.)<input name="military_fixed" type="number" step="0.01" value="${s.military_fixed/100}"></label>
+      <label>ЄСВ, грн/міс<input name="esv_month" type="number" step="0.01" value="${s.esv_month/100}"></label>
+      <div class="muted">Дохід ФОП рахується з рахунків:</div>
+      ${accs.map((a) => `<label class="switch">${esc(a.emoji + ' ' + a.name)} <input type="checkbox" name="acc" value="${a.id}" ${(s.tax_accounts.length ? s.tax_accounts.includes(a.id) : a.type === 'bank') ? 'checked' : ''}></label>`).join('')}
+      <button class="btn">Зберегти</button>
+      <p class="muted">Ставки 2026: ЄСВ 1 902,34 грн/міс, ЄП 2 гр. 1 729,40 грн, ВЗ 1–2 гр. 864,70 грн, 3 гр. — 5% + 1% ВЗ. Перевіряйте зміни законодавства.</p>
+    </form>` : ''}`;
+  $('taxForm')?.addEventListener('submit', (e) => safe(async () => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    await api('/taxes/settings', { method: 'POST', body: {
+      group: fd.get('group'), tax_rate: fd.get('tax_rate'), military_rate: fd.get('military_rate'),
+      group_fixed: formNum(fd, 'group_fixed'), military_fixed: formNum(fd, 'military_fixed'), esv_month: formNum(fd, 'esv_month'),
+      tax_accounts: fd.getAll('acc').map(Number),
+    } });
+    toast('Збережено'); refresh();
+  }));
+}
+
+async function renderPayouts() {
+  const p = await api('/payouts');
+  const accs = (state.boot.accounts || []).filter((a) => !a.archived);
+  view().innerHTML = `<h1>Виплати команді</h1>
+    <div class="kpis"><div class="kpi wide"><div class="l">Разом до виплати</div><div class="v">${money(p.total_due, p.base)}</div></div></div>
+    ${p.people.map((x) => `<div class="card"><div class="row"><b>${esc(x.name)}</b><b class="${x.due ? 'minus' : ''}">${money(x.due, p.base)}</b></div>
+      <div class="muted">нараховано ${money(x.accrued, p.base)} · виплачено ${money(x.paid, p.base)}${x.planned ? ' · у плані ' + money(x.planned, p.base) : ''}</div>
+      ${x.projects.map((pr) => `<div class="row sub"><span>${esc(pr.project_name)} · ${pr.kind === 'pct' ? pr.value + '%' : money(pr.value, pr.currency)}</span><span>${money(pr.due, p.base)}</span></div>`).join('')}</div>`).join('') || '<div class="empty">Ставок ще немає. Відкрий проєкт → «Команда проєкту» і додай людей з % або сумою.</div>'}
+    ${p.total_due > 0 && state.me.can.writeRefs ? `<form class="form card" id="payForm"><label>Платити з рахунку<select name="account_id" required>${selectOpts(accs, '', (a)=>`${a.emoji} ${a.name} · ${a.currency}`, 'Оберіть')}</select></label><button class="btn">Запланувати всі виплати</button></form>` : ''}`;
+  $('payForm')?.addEventListener('submit', (e) => safe(async () => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const r = await api('/payouts/plan', { method: 'POST', body: { account_id: formId(fd, 'account_id') } });
+    toast(`Заплановано виплат: ${r.created}`); refresh();
+  }));
+}
+
+async function renderProfit() {
+  const year = state.month.slice(0, 4);
+  const p = await api(`/profitability?from=${year}-01-01&to=${monthEnd(state.month)}`);
+  const table = (rows, label) => rows.length ? `<div class="card" style="overflow:auto"><table class="table"><tr><th>${label}</th><th>Дохід</th><th>Витрати</th><th>Прибуток</th><th>Маржа</th></tr>
+    ${rows.map((r) => `<tr><td>${esc(r.name)}</td><td>${money(r.income, p.base)}</td><td>${money(r.expense, p.base)}</td><td><b>${money(r.profit, p.base)}</b></td><td>${r.margin ?? '—'}${r.margin !== null ? '%' : ''}</td></tr>`).join('')}</table></div>` : '<div class="empty">Немає даних</div>';
+  view().innerHTML = `<h1>Прибутковість ${year}</h1><p class="muted">з ${p.from} по ${p.to}</p>
+    <h2>Типи робіт</h2>${table(p.byType, 'Тип')}
+    <h2>Виконавці</h2>${table(p.byMember, 'Людина')}
+    <h2>Проєкти</h2>${table(p.byProject.slice(0, 20), 'Проєкт')}`;
+}
+
+async function renderRequisites() {
+  const r = await api('/requisites');
+  view().innerHTML = `<h1>Реквізити</h1><p class="muted">Підставляються в рахунки-фактури та акти.</p><form class="form card" id="reqForm">
+    <label>Назва / ПІБ ФОП<input name="legal_name" value="${esc(r.legal_name)}" placeholder="ФОП Іванів Ангеліна Ігорівна"></label>
+    <label>ІПН / ЄДРПОУ<input name="legal_code" value="${esc(r.legal_code)}"></label>
+    <label>IBAN<input name="iban" value="${esc(r.iban)}"></label>
+    <label>Банк<input name="bank" value="${esc(r.bank)}"></label>
+    <label>Адреса<input name="address" value="${esc(r.address)}"></label>
+    <label>Підписант<input name="signer" value="${esc(r.signer)}"></label>
+    <label>Примітка про податки<input name="tax_note" value="${esc(r.tax_note)}"></label>
+    <button class="btn">Зберегти</button></form>`;
+  $('reqForm').addEventListener('submit', (e) => safe(async () => {
+    e.preventDefault();
+    await api('/requisites', { method: 'POST', body: Object.fromEntries(new FormData(e.target)) });
+    toast('Збережено');
+  }));
+}
+
+async function renderMono() {
+  const m = await api('/mono');
+  if (!m.enabled) {
+    view().innerHTML = `<h1>Monobank</h1><div class="card"><p>Щоб надходження на ФОП і картки ставали операціями автоматично:</p>
+      <ol class="muted"><li>Отримай особистий токен на api.monobank.ua</li><li>Додай його в налаштуваннях сервера як <b>MONO_TOKEN</b></li><li>Повернись сюди і привʼяжи рахунки</li></ol></div>`;
+    return;
+  }
+  const accs = (state.boot.accounts || []).filter((a) => !a.archived);
+  view().innerHTML = `<h1>Monobank</h1><p class="muted">${esc(m.name || '')}${m.last_sync ? ' · синхронізовано ' + m.last_sync.slice(0, 16).replace('T', ' ') : ''}</p>
+    ${m.accounts.map((a) => `<div class="card"><div class="row"><b>${esc(a.type === 'fop' ? 'ФОП' : a.type)} · ${esc(a.pan)}</b><span>${money(a.balance, a.currency)}</span></div>
+      <label>Привʼязати до<select data-mono="${esc(a.id)}" data-meta="${dataJson(a)}"><option value="">— не імпортувати —</option><option value="new">+ створити новий рахунок</option>${accs.map((x) => `<option value="${x.id}" ${a.linked_account_id === x.id ? 'selected' : ''}>${esc(x.emoji + ' ' + x.name)} · ${x.currency}</option>`).join('')}</select></label></div>`).join('')}
+    <div class="btns"><button class="btn" data-act="mono-sync">Підтягнути за 7 днів</button><button class="btn ghost" data-act="mono-hook">${m.webhook ? 'Оновити вебхук' : 'Увімкнути миттєво'}</button></div>
+    <p class="muted">«Увімкнути миттєво» — Monobank сам надсилатиме кожну операцію. Без цього бот перевіряє виписку раз на 30 хв.</p>`;
+}
+
 const screens = {
   dash: renderDash, tx: renderTx, projects: renderProjects, more: renderMore,
   clients: renderClients, team: renderTeam, pnl: renderPnl, upcoming: renderUpcoming,
   users: renderUsers, settings: renderSettings, audit: renderAudit, recurring: renderRecurring,
   import: renderImport,
+  templates: renderTemplates, debts: renderDebts, forecast: renderForecast, taxes: renderTaxes,
+  payouts: renderPayouts, profit: renderProfit, requisites: renderRequisites, mono: renderMono,
   accounts: renderAccounts, categories: renderCategories,
 };
 
@@ -642,10 +905,31 @@ document.body.addEventListener('click', async (e) => {
   if (catCard) return openCategory(JSON.parse(catCard.dataset.cat));
   const recCard = e.target.closest('[data-rec]');
   if (recCard) return openRecurring(JSON.parse(recCard.dataset.rec));
+  const tplBtn = e.target.closest('[data-tpl]');
+  if (tplBtn) return safe(async () => { const t = await api(`/templates/${tplBtn.dataset.tpl}/use`, { method: 'POST', body: {} }); toast(t.status === 'pending' ? 'Записано · на перевірці' : 'Записано'); refresh(); });
+  const tplEdit = e.target.closest('[data-tpl-edit]');
+  if (tplEdit) return openTemplate(JSON.parse(tplEdit.dataset.tplEdit));
+  if (e.target.closest('[data-act=new-tpl]')) return openTemplate();
+  const copy = e.target.closest('[data-copy]');
+  if (copy) return safe(async () => { await navigator.clipboard.writeText(copy.dataset.copy); toast('Скопійовано — встав у чат з клієнтом'); });
+  const wk = e.target.closest('[data-weeks]');
+  if (wk) { state.fWeeks = Number(wk.dataset.weeks); return refresh(); }
+  if (e.target.closest('[data-act=plan-taxes]')) return safe(async () => { const r = await api('/taxes/plan', { method: 'POST', body: {} }); toast(`Додано в план: ${r.created}`); refresh(); });
+  if (e.target.closest('[data-act=mono-sync]')) return safe(async () => { await api('/mono/sync', { method: 'POST', body: { days: 7 } }); toast('Синхронізація запущена — результат прийде в чат'); });
+  if (e.target.closest('[data-act=mono-hook]')) return safe(async () => { await api('/mono/webhook', { method: 'POST' }); toast('Вебхук увімкнено'); refresh(); });
+  if (e.target.id === 'backupBtn') return safe(async () => { await api('/backup', { method: 'POST' }); toast('Бекап надіслано в чат з ботом'); });
   const more = e.target.closest('[data-more]');
   if (more) { state.tab = more.dataset.more; return refresh(); }
 });
 document.body.addEventListener('change', async (e) => {
+  const monoSel = e.target.closest('[data-mono]');
+  if (monoSel) {
+    try {
+      await api('/mono/link', { method: 'POST', body: { mono_id: monoSel.dataset.mono, account_id: monoSel.value || null, ...JSON.parse(monoSel.dataset.meta) } });
+      state.boot = await api('/bootstrap'); toast('Збережено'); if (monoSel.value === 'new') refresh();
+    } catch (err) { toast(err.message); }
+    return;
+  }
   const role = e.target.closest('[data-role]');
   try {
     if (role) { await api('/users/' + role.dataset.role, { method: 'PATCH', body: { role: e.target.value } }); toast('Роль оновлено'); }

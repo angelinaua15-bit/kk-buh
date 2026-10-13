@@ -48,4 +48,9 @@ export const config = {
   devMode: env.DEV_MODE === '1',
   timezone: env.TZ || 'Europe/Kyiv',
   companyName: env.COMPANY_NAME || 'King Kong Lab',
+  openaiKey: env.OPENAI_API_KEY || '',
+  aiTranscribeModel: env.AI_TRANSCRIBE_MODEL || 'whisper-1',
+  aiVisionModel: env.AI_VISION_MODEL || 'gpt-4o-mini',
+  monoToken: env.MONO_TOKEN || '',
+  syncToken: env.SHEET_SYNC_TOKEN || '',
 };
