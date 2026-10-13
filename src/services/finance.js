@@ -473,6 +473,7 @@ export function runRecurring() {
   const created = [];
   for (const r of all('SELECT * FROM recurring WHERE active = 1 AND (last_month IS NULL OR last_month < ?)', ym)) {
     const day = String(Math.min(r.day_of_month, lastDay)).padStart(2, '0');
+    try {
     tx(() => {
       const t = createTx(
         {
@@ -493,6 +494,9 @@ export function runRecurring() {
       run('UPDATE recurring SET last_month = ? WHERE id = ?', ym, r.id);
       created.push(t);
     });
+    } catch (e) {
+      console.warn('recurring', r.id, e.message || e);
+    }
   }
   return created;
 }

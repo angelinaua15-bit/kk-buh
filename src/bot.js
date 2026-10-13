@@ -1,5 +1,5 @@
 import https from 'node:https';
-import { Bot, InlineKeyboard, Keyboard } from 'grammy';
+import { Bot, InlineKeyboard, InputFile, Keyboard } from 'grammy';
 import { config } from './config.js';
 
 const TG_IP = '149.154.167.220';
@@ -95,7 +95,7 @@ if (bot) {
       }
       if (u.status === 'pending') {
         return ctx.reply(
-          `Привіт, ${u.name}!\n\nЗаявку на доступ до бухгалтерії <b>${config.companyName}</b> надіслано адміну. Напишемо, щойно підтвердять.`,
+          `Привіт, ${esc(u.name)}!\n\nЗаявку на доступ до бухгалтерії <b>${config.companyName}</b> надіслано адміну. Напишемо, щойно підтвердять.`,
           { parse_mode: 'HTML', reply_markup: appBtn(u) },
         );
       }
@@ -108,7 +108,7 @@ if (bot) {
       }
       await ctx.reply(
         `🦍 <b>${config.companyName}</b> · бухгалтерія\n\n` +
-          `Привіт, ${u.name}. Роль: <b>${ROLES[u.role] || u.role}</b>.\n\n` +
+          `Привіт, ${esc(u.name)}. Роль: <b>${ROLES[u.role] || u.role}</b>.\n\n` +
           `Тисни <b>🦍 Бухгалтерія KK</b> внизу або кнопку нижче.`,
         { parse_mode: 'HTML', reply_markup: webAppKb(u) },
       );
@@ -125,9 +125,10 @@ if (bot) {
   });
 
   bot.command('balance', async (ctx) => {
-    if (!needActive(ctx, ctx.kk) || !can.seeAll(ctx.kk)) return ctx.reply(can.seeAll(ctx.kk) ? '' : 'Немає доступу до загальних балансів.');
+    if (!needActive(ctx, ctx.kk)) return;
+    if (!can.seeAll(ctx.kk)) return ctx.reply('Немає доступу до загальних балансів.');
     const b = balances();
-    const lines = b.accounts.map((a) => `${a.emoji} <b>${a.name}</b> · ${fmt(a.balance, a.currency)}`);
+    const lines = b.accounts.map((a) => `${a.emoji} <b>${esc(a.name)}</b> · ${fmt(a.balance, a.currency)}`);
     await ctx.reply(`💼 <b>Рахунки</b>\n\n${lines.join('\n')}\n\nРазом ≈ <b>${fmt(b.total, b.base)}</b>`, { parse_mode: 'HTML' });
   });
 
@@ -136,7 +137,7 @@ if (bot) {
     const d = dashboard(ctx.kk);
     if (d.limited) {
       return ctx.reply(
-        `👤 ${ctx.kk.name}\nВиплати цього місяця: <b>${fmt(d.payouts, d.base)}</b>\nЗа рік: <b>${fmt(d.yearPayouts, d.base)}</b>\nНа перевірці: ${d.pending}`,
+        `👤 ${esc(ctx.kk.name)}\nВиплати цього місяця: <b>${fmt(d.payouts, d.base)}</b>\nЗа рік: <b>${fmt(d.yearPayouts, d.base)}</b>\nНа перевірці: ${d.pending}`,
         { parse_mode: 'HTML' },
       );
     }
@@ -144,7 +145,8 @@ if (bot) {
   });
 
   bot.command('pending', async (ctx) => {
-    if (!needActive(ctx, ctx.kk) || !can.approve(ctx.kk)) return;
+    if (!needActive(ctx, ctx.kk)) return;
+    if (!can.approve(ctx.kk)) return ctx.reply('Перевіряти операції може адмін або фінансист.');
     const rows = all("SELECT t.id, t.date, t.type, t.amount, t.currency, t.comment, u.name AS who FROM transactions t LEFT JOIN users u ON u.id=t.created_by WHERE t.status='pending' AND t.deleted_at IS NULL ORDER BY t.id DESC LIMIT 15");
     if (!rows.length) return ctx.reply('Немає операцій на перевірці.');
     for (const t of rows) {
@@ -158,14 +160,14 @@ if (bot) {
 
   bot.callbackQuery(/^ok:(\d+)$/, async (ctx) => {
     if (!can.approve(ctx.kk)) return ctx.answerCallbackQuery({ text: 'Немає прав' });
-    setTxStatus(Number(ctx.match[1]), 'done', ctx.kk);
-    await ctx.editMessageText(ctx.callbackQuery.message.text + '\n\n✅ Проведено');
+    try { setTxStatus(Number(ctx.match[1]), 'done', ctx.kk); } catch (e) { return ctx.answerCallbackQuery({ text: e.message }); }
+    await ctx.editMessageText(ctx.callbackQuery.message.text + '\n\n✅ Проведено').catch(() => {});
     await ctx.answerCallbackQuery({ text: 'Проведено' });
   });
   bot.callbackQuery(/^no:(\d+)$/, async (ctx) => {
     if (!can.approve(ctx.kk)) return ctx.answerCallbackQuery({ text: 'Немає прав' });
-    setTxStatus(Number(ctx.match[1]), 'rejected', ctx.kk);
-    await ctx.editMessageText(ctx.callbackQuery.message.text + '\n\n❌ Відхилено');
+    try { setTxStatus(Number(ctx.match[1]), 'rejected', ctx.kk); } catch (e) { return ctx.answerCallbackQuery({ text: e.message }); }
+    await ctx.editMessageText(ctx.callbackQuery.message.text + '\n\n❌ Відхилено').catch(() => {});
     await ctx.answerCallbackQuery({ text: 'Відхилено' });
   });
   bot.callbackQuery(/^user:(active|blocked):(\d+)$/, async (ctx) => {
@@ -174,6 +176,7 @@ if (bot) {
     const { run } = await import('./db.js');
     run('UPDATE users SET status=? WHERE id=?', ctx.match[1], id);
     const u = get('SELECT * FROM users WHERE id=?', id);
+    if (!u) return ctx.answerCallbackQuery({ text: 'Користувача не знайдено' });
     await ctx.editMessageText(`${u.name} · ${ctx.match[1] === 'active' ? 'доступ надано' : 'заблоковано'}`);
     if (u.tg_id && ctx.match[1] === 'active') {
       await bot.api.sendMessage(u.tg_id, `✅ Доступ до бухгалтерії ${config.companyName} підтверджено.`, { reply_markup: webAppKb(u) }).catch(() => {});
@@ -199,7 +202,7 @@ if (bot) {
     if (textMap[t] === 'balance') {
       if (!can.seeAll(u)) return ctx.reply('Немає доступу до загальних балансів.');
       const b = balances();
-      return ctx.reply(`💼 <b>Рахунки</b>\n\n${b.accounts.map((a) => `${a.emoji} <b>${a.name}</b> · ${fmt(a.balance, a.currency)}`).join('\n')}\n\nРазом ≈ <b>${fmt(b.total, b.base)}</b>`, { parse_mode: 'HTML' });
+      return ctx.reply(`💼 <b>Рахунки</b>\n\n${b.accounts.map((a) => `${a.emoji} <b>${esc(a.name)}</b> · ${fmt(a.balance, a.currency)}`).join('\n')}\n\nРазом ≈ <b>${fmt(b.total, b.base)}</b>`, { parse_mode: 'HTML' });
     }
     if (textMap[t] === 'report') {
       return ctx.reply(monthCard(dashboard(u)), { parse_mode: 'HTML', reply_markup: appBtn(u) });
@@ -207,14 +210,15 @@ if (bot) {
     if (textMap[t] === 'plan') {
       const rows = upcoming(21);
       if (!rows.length) return ctx.reply('Немає запланованих платежів на 3 тижні.');
-      return ctx.reply(rows.map((x) => `${x.overdue ? '⚠️' : '📅'} ${x.date} · ${x.type === 'income' ? '+' : '−'}${fmt(x.amount, x.currency)} · ${x.comment || x.category_name || '—'}`).join('\n'), { parse_mode: 'HTML' });
+      return ctx.reply(rows.map((x) => `${x.overdue ? '⚠️' : '📅'} ${x.date} · ${x.type === 'income' ? '+' : '−'}${fmt(x.amount, x.currency)} · ${esc(x.comment || x.category_name || '—')}`).join('\n'), { parse_mode: 'HTML' });
     }
     if (textMap[t] === 'team') {
       if (!can.seeAll(u)) return ctx.reply('Немає доступу.');
       const m = monthOf(today());
       const [from, to] = [`${m}-01`, today()];
       const rows = team(from, to);
-      return ctx.reply(`👥 <b>Виплати ${m}</b>\n\n` + rows.filter((x) => x.paid_base).map((x) => `• ${x.name} — ${fmt(x.paid_base, baseCurrency())}`).join('\n'), { parse_mode: 'HTML' });
+      const paid = rows.filter((x) => x.paid_base);
+      return ctx.reply(`👥 <b>Виплати ${m}</b>\n\n` + (paid.map((x) => `• ${esc(x.name)} — ${fmt(x.paid_base, baseCurrency())}`).join('\n') || 'Цього місяця виплат ще не було.'), { parse_mode: 'HTML' });
     }
     if (textMap[t] === 'income' || textMap[t] === 'expense') {
       pending.set(u.id, { type: textMap[t] });
@@ -239,6 +243,9 @@ if (bot) {
       } catch (e) {
         return ctx.reply(e.message || 'Не вдалося зберегти. Відкрий Mini App.');
       }
+    }
+    if (/^\s*\d/.test(t)) {
+      return ctx.reply('Щоб записати операцію, почни з + (дохід) або − (витрата).\nНаприклад: <code>+1200 сайт клієнта</code> або <code>-300 реклама</code>.\nАбо натисни «➕ Дохід» / «➖ Витрата».', { parse_mode: 'HTML' });
     }
     return next();
   });
@@ -280,6 +287,15 @@ if (bot) {
   });
 
   bot.catch((err) => console.error('bot error', err.error || err));
+}
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+}
+
+export async function sendFile(chatId, buffer, filename, caption) {
+  if (!bot) throw new Error('Бот не налаштований');
+  await bot.api.sendDocument(chatId, new InputFile(buffer, filename), { caption });
 }
 
 function monthCard(d) {
@@ -391,17 +407,20 @@ export function scheduleJobs() {
     const now = new Date();
     const kyivH = Number(new Intl.DateTimeFormat('en-GB', { timeZone: config.timezone, hour: '2-digit', hour12: false }).format(now));
     const kyivM = Number(new Intl.DateTimeFormat('en-GB', { timeZone: config.timezone, minute: '2-digit' }).format(now));
-    const stamp = `${now.toISOString().slice(0, 10)}-${kyivH}`;
-    if (kyivH === 9 && kyivM < 5 && getSetting('last_digest') !== stamp && getSetting('daily_digest') === '1') {
+    const stamp = today();
+    if (kyivH >= 9 && getSetting('last_recurring') !== stamp) {
+      setSetting('last_recurring', stamp);
       const { runRecurring } = await import('./services/finance.js');
-      const created = runRecurring();
+      try { tick.created = runRecurring(); } catch (e) { console.warn('recurring', e.message || e); tick.created = []; }
+    }
+    if (kyivH === 9 && kyivM < 10 && getSetting('last_digest') !== stamp && getSetting('daily_digest') === '1') {
+      setSetting('last_digest', stamp);
+      const created = tick.created || [];
       const d = dashboard({ role: 'admin', id: 0 });
       if (!d.limited) {
         await notifyAdmins('🗓 <b>Ранковий дайджест</b>\n\n' + monthCard(d) + (created.length ? `\n\n🔁 Створено регулярних: ${created.length}` : ''), { silent: true });
       }
-      const { setSetting } = await import('./db.js');
-      setSetting('last_digest', stamp);
     }
   };
-  setInterval(tick, 60_000);
+  setInterval(() => tick().catch((e) => console.warn('tick', e.message || e)), 60_000);
 }

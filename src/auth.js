@@ -93,9 +93,13 @@ export function authMiddleware(req, res, next) {
   const header = req.get('authorization') || '';
   let tg = null;
   if (header.startsWith('tma ')) tg = verifyInitData(header.slice(4));
-  if (!tg && header.startsWith('sess ')) {
-    const s = verifySession(header.slice(5).trim());
-    if (s) tg = { id: s.id, first_name: config.adminIds.includes(s.id) ? 'Ангеліна' : `User ${s.id}` };
+  const sessRaw = header.startsWith('sess ') ? header.slice(5).trim() : (req.get('x-kk-session') || '').trim();
+  if (!tg && sessRaw) {
+    const s = verifySession(sessRaw);
+    if (s) {
+      const known = get('SELECT name, username FROM users WHERE tg_id = ?', s.id);
+      tg = { id: s.id, first_name: known?.name || (config.adminIds.includes(s.id) ? 'Ангеліна' : `User ${s.id}`), username: known?.username || undefined };
+    }
   }
   if (!tg && config.devMode && req.get('x-dev-user')) {
     const id = Number(req.get('x-dev-user'));

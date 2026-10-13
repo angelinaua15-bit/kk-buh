@@ -107,8 +107,13 @@ api.get('/projects/:id', (req, res) => {
   const txs = listTx({ project_id: p.id, limit: 200 }, req.user).rows;
   res.json({ ...p, transactions: txs });
 });
+const needName = (b, field = 'name') => {
+  if (!String(b?.[field] || '').trim()) throw new HttpError(400, 'Вкажіть назву');
+};
+
 api.post('/projects', guard(can.writeRefs), (req, res) => {
   const b = req.body;
+  needName(b);
   const r = run(
     'INSERT INTO projects(name, client_id, status, budget, currency, manager_id, start_date, deadline, notes) VALUES(?,?,?,?,?,?,?,?,?)',
     b.name, b.client_id || null, b.status || 'active', Math.round(Number(b.budget) || 0), b.currency || 'USD',
@@ -135,6 +140,7 @@ api.patch('/projects/:id', guard(can.writeRefs), (req, res) => {
 api.get('/clients', (req, res) => res.json(clients()));
 api.post('/clients', guard(can.writeRefs), (req, res) => {
   const b = req.body;
+  needName(b);
   const r = run('INSERT INTO clients(name, contact, phone, email, notes) VALUES(?,?,?,?,?)', b.name, b.contact || null, b.phone || null, b.email || null, b.notes || null);
   res.status(201).json(get('SELECT * FROM clients WHERE id=?', r.lastInsertRowid));
 });
@@ -152,7 +158,7 @@ api.get('/team', (req, res) => {
   res.json({ from, to, members: team(from, to) });
 });
 
-api.get('/users', guard(can.manageUsers), (req, res) => res.json(all('SELECT * FROM users ORDER BY status="pending" DESC, status, name')));
+api.get('/users', guard(can.manageUsers), (req, res) => res.json(all("SELECT * FROM users ORDER BY status='pending' DESC, status, name")));
 api.patch('/users/:id', guard(can.manageUsers), (req, res) => {
   const id = needId(req);
   const u = get('SELECT * FROM users WHERE id=?', id);
@@ -169,6 +175,7 @@ api.patch('/users/:id', guard(can.manageUsers), (req, res) => {
 api.get('/accounts', (req, res) => res.json(all('SELECT * FROM accounts ORDER BY archived, sort, id')));
 api.post('/accounts', guard(can.writeRefs), (req, res) => {
   const b = req.body;
+  needName(b);
   const r = run('INSERT INTO accounts(name, type, currency, emoji, initial_balance, sort) VALUES(?,?,?,?,?,?)',
     b.name, b.type || 'card', b.currency || 'UAH', b.emoji || '💳', Math.round(Number(b.initial_balance) || 0), Number(b.sort) || 0);
   res.status(201).json(get('SELECT * FROM accounts WHERE id=?', r.lastInsertRowid));
@@ -186,6 +193,7 @@ api.patch('/accounts/:id', guard(can.writeRefs), (req, res) => {
 api.get('/categories', (req, res) => res.json(all('SELECT * FROM categories ORDER BY kind, archived, sort, id')));
 api.post('/categories', guard(can.writeRefs), (req, res) => {
   const b = req.body;
+  needName(b);
   const r = run('INSERT INTO categories(kind, name, emoji, color, monthly_limit, sort) VALUES(?,?,?,?,?,?)',
     b.kind, b.name, b.emoji || '•', b.color || '#7B5CFF', b.monthly_limit ? Math.round(Number(b.monthly_limit)) : null, Number(b.sort) || 0);
   res.status(201).json(get('SELECT * FROM categories WHERE id=?', r.lastInsertRowid));
@@ -206,6 +214,9 @@ api.get('/recurring', (req, res) => res.json(all(
 )));
 api.post('/recurring', guard(can.writeRefs), (req, res) => {
   const b = req.body;
+  needName(b, 'title');
+  if (!(Number(b.amount) > 0)) throw new HttpError(400, 'Сума має бути більше 0');
+  if (!b.account_id) throw new HttpError(400, 'Оберіть рахунок');
   const r = run('INSERT INTO recurring(title, type, amount, account_id, category_id, project_id, client_id, member_id, day_of_month, active) VALUES(?,?,?,?,?,?,?,?,?,?)',
     b.title, b.type, Math.round(Number(b.amount)), b.account_id, b.category_id || null, b.project_id || null, b.client_id || null, b.member_id || null, Number(b.day_of_month) || 1, b.active === 0 ? 0 : 1);
   res.status(201).json(get('SELECT * FROM recurring WHERE id=?', r.lastInsertRowid));
@@ -278,6 +289,16 @@ api.get('/export.xlsx', async (req, res) => {
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.setHeader('Content-Disposition', `attachment; filename="KKLab_${from}_${to}.xlsx"`);
   res.send(Buffer.from(buf));
+});
+
+api.post('/export/send', async (req, res) => {
+  const from = req.body?.from || `${today().slice(0, 4)}-01-01`;
+  const to = req.body?.to || today();
+  if (!req.user.tg_id) throw new HttpError(400, 'Немає Telegram-чату для надсилання');
+  const buf = await buildWorkbook({ from, to, user: req.user });
+  const { sendFile } = await import('./bot.js');
+  await sendFile(req.user.tg_id, Buffer.from(buf), `KKLab_${from}_${to}.xlsx`, `📊 Звіт ${from} — ${to}`);
+  res.json({ ok: true });
 });
 
 api.get('/search', (req, res) => {

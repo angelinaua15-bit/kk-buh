@@ -87,6 +87,17 @@ function signed(n, cur) {
   const cls = n > 0 ? 'plus' : n < 0 ? 'minus' : '';
   return `<span class="${cls}">${n < 0 ? '−' : n > 0 ? '+' : ''}${money(Math.abs(n), cur)}</span>`;
 }
+async function safe(fn) {
+  try { await fn(); } catch (e) { toast(e.message || 'Помилка'); }
+}
+function dataJson(o) {
+  return esc(JSON.stringify(o));
+}
+async function ask(text) {
+  const tg = tgWebApp();
+  if (tg?.showConfirm && tg.isVersionAtLeast?.('6.2')) return new Promise((r) => tg.showConfirm(text, r));
+  return confirm(text);
+}
 function esc(s) {
   return String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
@@ -103,6 +114,7 @@ function authHeaders() {
   const init = tgInitData();
   if (init) headers.Authorization = `tma ${init}`;
   else if (session) headers.Authorization = `sess ${session}`;
+  if (init && session) headers['X-KK-Session'] = session;
   else if (location.search.includes('dev=')) headers['x-dev-user'] = new URLSearchParams(location.search).get('dev');
   return headers;
 }
@@ -300,9 +312,9 @@ async function openTx(id) {
         closeModal(); toast('Збережено'); await refresh();
       } catch (err) { toast(err.message); }
     };
-    el.querySelector('[data-act=approve]')?.addEventListener('click', async () => { await api('/transactions/' + t.id + '/status', { method: 'POST', body: { status: 'done' } }); closeModal(); toast('Проведено'); refresh(); });
-    el.querySelector('[data-act=reject]')?.addEventListener('click', async () => { await api('/transactions/' + t.id + '/status', { method: 'POST', body: { status: 'rejected' } }); closeModal(); toast('Відхилено'); refresh(); });
-    el.querySelector('[data-act=del]')?.addEventListener('click', async () => { if (!confirm('Видалити операцію?')) return; await api('/transactions/' + t.id, { method: 'DELETE' }); closeModal(); toast('Видалено'); refresh(); });
+    el.querySelector('[data-act=approve]')?.addEventListener('click', () => safe(async () => { await api('/transactions/' + t.id + '/status', { method: 'POST', body: { status: 'done' } }); closeModal(); toast('Проведено'); refresh(); }));
+    el.querySelector('[data-act=reject]')?.addEventListener('click', () => safe(async () => { await api('/transactions/' + t.id + '/status', { method: 'POST', body: { status: 'rejected' } }); closeModal(); toast('Відхилено'); refresh(); }));
+    el.querySelector('[data-act=del]')?.addEventListener('click', () => safe(async () => { if (!(await ask('Видалити операцію?'))) return; await api('/transactions/' + t.id, { method: 'DELETE' }); closeModal(); toast('Видалено'); refresh(); }));
   });
 }
 
@@ -367,7 +379,7 @@ async function renderMore() {
 async function renderClients() {
   const rows = await api('/clients');
   view().innerHTML = `<div class="row"><h1>Клієнти</h1>${state.me.can.writeRefs?'<button class="chip" data-act="new-client">+</button>':''}</div>
-    ${rows.map((c) => `<div class="card"><div class="row"><b>${esc(c.name)}</b><span>${money(c.income_base, state.boot.base)}</span></div>
+    ${rows.map((c) => `<div class="card" data-client="${dataJson(c)}"><div class="row"><b>${esc(c.name)}</b><span>${money(c.income_base, state.boot.base)}</span></div>
       <div class="muted">${c.projects_count} проєктів${c.last_payment ? ' · останній платіж ' + c.last_payment : ''}</div></div>`).join('') || '<div class="empty">Немає клієнтів</div>'}`;
 }
 
@@ -394,6 +406,30 @@ async function renderPnl() {
 async function renderUpcoming() {
   const rows = await api('/reports/upcoming?days=60');
   view().innerHTML = `<h1>Календар</h1><div class="card">${rows.map((t) => `<div class="row"><span>${t.overdue?'⚠️':'📅'} ${t.date}<br><span class="muted">${esc(t.comment||t.category_name||'')}</span></span><b>${signed(t.type==='income'?t.amount:-t.amount, t.currency)}</b></div>`).join('') || '<div class="empty">Порожньо</div>'}</div>`;
+}
+
+function openClient(c = {}) {
+  openModal(`<div class="handle"></div><h3>${c.id ? 'Клієнт' : 'Новий клієнт'}</h3>
+    <form class="form" id="refForm">
+      <label>Імʼя / компанія<input name="name" required value="${esc(c.name || '')}"></label>
+      <label>Контактна особа<input name="contact" value="${esc(c.contact || '')}"></label>
+      <label>Телефон<input name="phone" type="tel" value="${esc(c.phone || '')}"></label>
+      <label>Email<input name="email" type="email" value="${esc(c.email || '')}"></label>
+      <label>Нотатки<textarea name="notes" rows="2">${esc(c.notes || '')}</textarea></label>
+      ${c.id ? `<label class="switch">Архів <input type="checkbox" name="archived" ${c.archived ? 'checked' : ''}></label>` : ''}
+      <button class="btn">Зберегти</button>
+    </form>`, (el) => {
+    el.querySelector('#refForm').onsubmit = async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const body = { name: fd.get('name'), contact: fd.get('contact'), phone: fd.get('phone'), email: fd.get('email'), notes: fd.get('notes'), archived: fd.get('archived') === 'on' };
+      try {
+        if (c.id) await api('/clients/' + c.id, { method: 'PATCH', body });
+        else await api('/clients', { method: 'POST', body });
+        closeModal(); state.boot = await api('/bootstrap'); toast('Збережено'); refresh();
+      } catch (err) { toast(err.message); }
+    };
+  });
 }
 
 function openAccount(a = {}) {
@@ -449,11 +485,17 @@ function openRecurring(r = {}) {
       <div class="seg" id="typeSeg">${['expense','income'].map((k)=>`<button type="button" data-type="${k}" class="${(r.type||'expense')===k?'on':''}">${TYPE[k]}</button>`).join('')}</div>
       <label>Сума<input name="amount" type="number" step="0.01" required value="${r.amount?r.amount/100:''}"></label>
       <label>Рахунок<select name="account_id">${selectOpts(accs, r.account_id)}</select></label>
-      <label>Категорія<select name="category_id">${selectOpts(state.boot.categories, r.category_id)}</select></label>
+      <label>Категорія<select name="category_id">${selectOpts((state.boot.categories || []).filter((c) => !c.archived && c.kind === (r.type || 'expense')), r.category_id)}</select></label>
       <label>День місяця<input name="day_of_month" type="number" min="1" max="28" value="${r.day_of_month||1}"></label>
       <label class="switch">Активний <input type="checkbox" name="active" ${r.active!==0?'checked':''}></label>
       <button class="btn">Зберегти</button>
     </form>`, (el) => {
+    el.querySelector('#typeSeg').addEventListener('click', (e) => {
+      const b = e.target.closest('[data-type]');
+      if (!b) return;
+      el.querySelectorAll('#typeSeg button').forEach((x) => x.classList.toggle('on', x === b));
+      el.querySelector('[name=category_id]').innerHTML = selectOpts((state.boot.categories || []).filter((c) => !c.archived && c.kind === b.dataset.type), '');
+    });
     el.querySelector('#refForm').onsubmit = async (e) => {
       e.preventDefault();
       const fd = new FormData(e.target);
@@ -470,12 +512,12 @@ function openRecurring(r = {}) {
 async function renderAccounts() {
   const rows = await api('/accounts');
   view().innerHTML = `<div class="row"><h1>Рахунки</h1>${state.me.can.writeRefs?'<button class="chip" data-act="new-acc">+</button>':''}</div>
-    ${rows.map((a) => `<div class="card" data-acc='${JSON.stringify(a)}'><div class="row"><b>${esc(a.emoji+' '+a.name)}</b><span class="muted">${a.currency}${a.archived?' · архів':''}</span></div></div>`).join('')}`;
+    ${rows.map((a) => `<div class="card" data-acc="${dataJson(a)}"><div class="row"><b>${esc(a.emoji+' '+a.name)}</b><span class="muted">${a.currency}${a.archived?' · архів':''}</span></div></div>`).join('')}`;
 }
 async function renderCategories() {
   const rows = await api('/categories');
   view().innerHTML = `<div class="row"><h1>Категорії</h1>${state.me.can.writeRefs?'<button class="chip" data-act="new-cat">+</button>':''}</div>
-    ${rows.map((c) => `<div class="card" data-cat='${JSON.stringify(c)}'><div class="row"><b>${esc(c.emoji+' '+c.name)}</b><span class="tag">${c.kind==='income'?'дохід':'витрата'}</span></div></div>`).join('')}`;
+    ${rows.map((c) => `<div class="card" data-cat="${dataJson(c)}"><div class="row"><b>${esc(c.emoji+' '+c.name)}</b><span class="tag">${c.kind==='income'?'дохід':'витрата'}</span></div></div>`).join('')}`;
 }
 
 async function renderUsers() {
@@ -541,7 +583,7 @@ async function renderAudit() {
 async function renderRecurring() {
   const rows = await api('/recurring');
   view().innerHTML = `<div class="row"><h1>Регулярні</h1><div>${state.me.can.writeRefs?'<button class="chip" data-act="new-rec">+</button> <button class="chip" data-act="run-rec">За місяць</button>':''}</div></div>
-    ${rows.map((r)=>`<div class="card" data-rec='${JSON.stringify(r)}'><div class="row"><b>${esc(r.title)}</b><span>${r.active?'щомісяця '+r.day_of_month:'вимкн.'}</span></div>
+    ${rows.map((r)=>`<div class="card" data-rec="${dataJson(r)}"><div class="row"><b>${esc(r.title)}</b><span>${r.active?'щомісяця '+r.day_of_month:'вимкн.'}</span></div>
       <div class="muted">${TYPE[r.type]} · ${(r.amount/100)} · ${esc(r.account_name||'')} · ${esc(r.category_name||'')}</div></div>`).join('') || '<div class="empty">Немає шаблонів</div>'}`;
 }
 
@@ -584,13 +626,13 @@ document.body.addEventListener('click', async (e) => {
   const pr = e.target.closest('[data-project]');
   if (pr) return openProject(Number(pr.dataset.project));
   if (e.target.closest('[data-act=new-project]')) return openProject();
-  if (e.target.closest('[data-act=new-client]')) {
-    const name = prompt("Ім'я клієнта");
-    if (!name) return;
-    await api('/clients', { method: 'POST', body: { name } });
-    state.boot = await api('/bootstrap'); toast('Додано'); return refresh();
+  if (e.target.closest('[data-act=new-client]')) return openClient();
+  const clCard = e.target.closest('[data-client]');
+  if (clCard) return openClient(JSON.parse(clCard.dataset.client));
+  if (e.target.closest('[data-act=run-rec]')) {
+    try { const r = await api('/recurring/run', { method: 'POST' }); toast(`Створено: ${r.created.length}`); } catch (err) { toast(err.message); }
+    return refresh();
   }
-  if (e.target.closest('[data-act=run-rec]')) { await api('/recurring/run', { method: 'POST' }); toast('Створено'); return refresh(); }
   if (e.target.closest('[data-act=new-acc]')) return openAccount();
   if (e.target.closest('[data-act=new-cat]')) return openCategory();
   if (e.target.closest('[data-act=new-rec]')) return openRecurring();
@@ -605,23 +647,38 @@ document.body.addEventListener('click', async (e) => {
 });
 document.body.addEventListener('change', async (e) => {
   const role = e.target.closest('[data-role]');
-  if (role) { await api('/users/' + role.dataset.role, { method: 'PATCH', body: { role: e.target.value } }); toast('Роль оновлено'); }
-  const st = e.target.closest('[data-status]');
-  if (st) { await api('/users/' + st.dataset.status, { method: 'PATCH', body: { status: e.target.value } }); toast('Статус оновлено'); }
+  try {
+    if (role) { await api('/users/' + role.dataset.role, { method: 'PATCH', body: { role: e.target.value } }); toast('Роль оновлено'); }
+    const st = e.target.closest('[data-status]');
+    if (st) { await api('/users/' + st.dataset.status, { method: 'PATCH', body: { status: e.target.value } }); toast('Статус оновлено'); }
+  } catch (err) { toast(err.message); }
 });
 
 $('searchBtn').onclick = () => $('searchBar').classList.toggle('hidden');
-$('searchInput').addEventListener('input', async (e) => {
-  const q = e.target.value.trim();
+let searchTimer;
+$('searchInput').addEventListener('input', (e) => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => runSearch(e.target.value.trim()), 250);
+});
+async function runSearch(q) {
   const box = $('searchResults');
   if (q.length < 2) { box.classList.add('hidden'); return; }
-  const r = await api('/search?q=' + encodeURIComponent(q));
+  let r;
+  try { r = await api('/search?q=' + encodeURIComponent(q)); } catch (err) { return toast(err.message); }
   box.classList.remove('hidden');
   box.innerHTML = `<div class="sheet" style="position:static;border-radius:16px">
     ${r.transactions.map(txRow).join('') || '<div class="muted">Нічого</div>'}
   </div>`;
-});
+}
 $('exportBtn').onclick = async () => {
+  if (inTelegram()) {
+    try {
+      toast('Готую Excel…');
+      await api('/export/send', { method: 'POST', body: { from: `${state.month}-01`, to: monthEnd(state.month) } });
+      toast('Excel надіслано в чат з ботом');
+    } catch (e) { toast(e.message); }
+    return;
+  }
   try {
     const blob = await api(`/export.xlsx?from=${state.month}-01&to=${monthEnd(state.month)}`);
     const a = document.createElement('a');
@@ -635,6 +692,7 @@ document.body.addEventListener('submit', async (e) => {
   if (e.target.id !== 'setForm') return;
   e.preventDefault();
   const fd = new FormData(e.target);
+  try {
   await api('/settings', { method: 'POST', body: {
     company_name: fd.get('company_name'), base_currency: fd.get('base_currency'),
     member_sees_all: fd.get('member_sees_all') === 'on',
@@ -642,11 +700,14 @@ document.body.addEventListener('submit', async (e) => {
     daily_digest: fd.get('daily_digest') === 'on',
   }});
   toast('Збережено');
+  } catch (err) { toast(err.message); }
 });
 document.body.addEventListener('click', async (e) => {
   if (e.target.id !== 'nbu') return;
-  const r = await api('/rates/refresh', { method: 'POST' });
-  toast('Оновлено курсів: ' + r.updated);
+  try {
+    const r = await api('/rates/refresh', { method: 'POST' });
+    toast('Оновлено курсів: ' + r.updated);
+  } catch (err) { toast(err.message); }
 });
 
 async function boot() {
