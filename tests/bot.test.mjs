@@ -236,6 +236,55 @@ await test('HTML in names is escaped', async () => {
   assert.ok(lastReply().payload.text.includes('&lt;b&gt;x&lt;/b&gt; &amp; co'));
 });
 
+// ── запрошення ──
+{
+  const { inviteLink, resetInviteCode } = await import('../src/auth.js');
+  await test('/invite → link + roles, only for admin', async () => {
+    await text(111, '/invite');
+    const r = lastReply();
+    assert.match(r.payload.text, /start=join_[a-f0-9]+/);
+    assert.ok(lastKbData().includes('inv:reset'));
+  });
+  await test('opening invite link → active admin, no approval request', async () => {
+    const code = inviteLink().split('join_')[1];
+    await text(9222, `/start join_${code}`);
+    const u = get('SELECT * FROM users WHERE tg_id=9222');
+    assert.equal(u.status, 'active');
+    assert.equal(u.role, 'admin');
+    assert.match(lastReply().payload.text, /запрошенням/);
+    assert.ok(!sent.some((x) => /Нова заявка/.test(x.payload.text || '')));
+  });
+  await test('stale invite code → pending request as before', async () => {
+    const old = inviteLink().split('join_')[1];
+    resetInviteCode();
+    await text(9333, `/start join_${old}`);
+    const u = get('SELECT * FROM users WHERE tg_id=9333');
+    assert.equal(u.status, 'pending');
+    await tap(111, `user:admin:${u.id}`);
+    const u2 = get('SELECT * FROM users WHERE tg_id=9333');
+    assert.equal(u2.role, 'admin');
+    assert.equal(u2.status, 'active');
+  });
+  await test('invite role switch → finance; non-admin cannot invite', async () => {
+    await tap(111, 'inv:role:finance');
+    const code = inviteLink().split('join_')[1];
+    await text(9444, `/start join_${code}`);
+    assert.equal(get('SELECT role FROM users WHERE tg_id=9444').role, 'finance');
+    await text(9444, '/invite');
+    assert.match(lastReply().payload.text, /лише адмін/);
+    await tap(111, 'inv:role:admin');
+  });
+  await test('open access → anyone becomes admin; off again → pending', async () => {
+    const { setSetting } = await import('../src/db.js');
+    setSetting('open_access', '1');
+    await text(9555, '/start');
+    assert.equal(get('SELECT status FROM users WHERE tg_id=9555').status, 'active');
+    setSetting('open_access', '0');
+    await text(9666, '/start');
+    assert.equal(get('SELECT status FROM users WHERE tg_id=9666').status, 'pending');
+  });
+}
+
 console.log(`\n${passed} passed${process.exitCode ? ', FAILURES above' : ''}`);
 fs.rmSync(dir, { recursive: true, force: true });
 process.exit(process.exitCode || 0);

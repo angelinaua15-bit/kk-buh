@@ -169,3 +169,5 @@ ol.muted { padding-left: 18px; line-height: 1.6; }
 .calc .row { padding: 4px 0; }
 .table.sum td.tot { color: var(--green); }
 .filters { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+
+.invite__link{font:600 13px/1.4 ui-monospace,Menlo,monospace;word-break:break-all;padding:10px 12px;border-radius:12px;background:rgba(127,127,160,.12);user-select:all}

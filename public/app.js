@@ -605,14 +605,47 @@ async function renderCategories() {
 }
 
 async function renderUsers() {
-  const rows = await api('/users');
-  view().innerHTML = `<h1>Доступи</h1>${rows.map((u) => `<div class="card">
+  const [rows, inv] = await Promise.all([api('/users'), api('/invite').catch(() => null)]);
+  const roleOpts = (sel) => Object.entries(ROLES).map(([k, v]) => `<option value="${k}" ${sel === k ? 'selected' : ''}>${v}</option>`).join('');
+  const invite = inv ? `<div class="card invite">
+      <div class="row"><b>🔗 Запросити в команду</b><span class="tag green">${ROLES[inv.role]}</span></div>
+      <p class="muted" style="margin:8px 0">Хто відкриє посилання — одразу отримає доступ із цією роллю і бачитиме те саме, що й ти. Надсилай лише тим, кому довіряєш.</p>
+      <div class="invite__link" id="invLink">${esc(inv.link)}</div>
+      <div class="btns" style="margin-top:10px">
+        <button class="btn" type="button" id="invCopy">Скопіювати</button>
+        <button class="btn ghost" type="button" id="invShare">Надіслати в Telegram</button>
+      </div>
+      <label style="margin-top:12px">Роль за посиланням<select id="invRole">${roleOpts(inv.role)}</select></label>
+      <button class="btn ghost" type="button" id="invReset" style="margin-top:8px">🔄 Новий код (старе посилання перестане працювати)</button>
+      <hr style="border:0;border-top:1px solid var(--line, #2a2f55);margin:14px 0">
+      <label class="switch">Відкритий доступ для всіх <input type="checkbox" id="invOpen" ${inv.open_access ? 'checked' : ''}></label>
+      <p class="muted" style="margin-top:6px">⚠️ Будь-хто, хто знайде бота й натисне Start, одразу отримає роль «${ROLES[inv.open_role]}» і бачитиме фінанси. Краще користуватися посиланням вище.</p>
+    </div>` : '';
+  view().innerHTML = `<h1>Доступи</h1>${invite}${rows.map((u) => `<div class="card">
     <div class="row"><b>${esc(u.name)}</b><span class="tag ${u.status==='pending'?'amber':u.status==='blocked'?'red':'green'}">${USTATUS[u.status]}</span></div>
     <div class="muted">@${esc(u.username||'—')} · ${ROLES[u.role]}</div>
     <div class="btns" style="margin-top:10px">
       <select data-role="${u.id}">${Object.entries(ROLES).map(([k,v])=>`<option value="${k}" ${u.role===k?'selected':''}>${v}</option>`).join('')}</select>
       <select data-status="${u.id}">${Object.entries(USTATUS).map(([k,v])=>`<option value="${k}" ${u.status===k?'selected':''}>${v}</option>`).join('')}</select>
     </div></div>`).join('')}`;
+  if (!inv) return;
+  const setInv = async (body, msg) => { const r = await api('/invite', { method: 'POST', body }); toast(msg); return r; };
+  $('invCopy').onclick = async () => {
+    try { await navigator.clipboard.writeText($('invLink').textContent); toast('Посилання скопійовано'); }
+    catch { toast('Утримуй посилання, щоб скопіювати'); }
+  };
+  $('invShare').onclick = () => {
+    const url = `https://t.me/share/url?url=${encodeURIComponent($('invLink').textContent)}&text=${encodeURIComponent('Доступ до бухгалтерії King Kong Lab 🦍')}`;
+    if (window.Telegram?.WebApp?.openTelegramLink) Telegram.WebApp.openTelegramLink(url); else window.open(url, '_blank');
+  };
+  $('invRole').onchange = (e) => { setInv({ role: e.target.value }, 'Роль за посиланням оновлено').then(renderUsers); };
+  $('invReset').onclick = () => { setInv({ reset: true }, 'Створено нове посилання').then(renderUsers); };
+  const ask = (q) => new Promise((ok) => (window.Telegram?.WebApp?.showConfirm ? Telegram.WebApp.showConfirm(q, ok) : ok(window.confirm(q))));
+  $('invOpen').onchange = async (e) => {
+    const on = e.target.checked;
+    if (on && !(await ask('Увімкнути доступ для всіх? Будь-хто з Telegram зможе бачити фінанси.'))) { e.target.checked = false; return; }
+    setInv({ open_access: on }, on ? 'Відкритий доступ увімкнено' : 'Відкритий доступ вимкнено');
+  };
 }
 
 async function renderImport() {

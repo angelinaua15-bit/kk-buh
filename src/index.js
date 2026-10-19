@@ -2,7 +2,7 @@ import express from 'express';
 import path from 'node:path';
 import { config, ROOT } from './config.js';
 import { api, apiErrorHandler } from './api.js';
-import { onNewUser } from './auth.js';
+import { onJoin, onNewUser } from './auth.js';
 import { bot, notifyAdmins, scheduleJobs, startBot } from './bot.js';
 import { ROLES } from './services/finance.js';
 import { InlineKeyboard } from 'grammy';
@@ -90,9 +90,17 @@ app.use(express.static(path.join(ROOT, 'public'), {
 }));
 app.get('/', (_req, res) => res.sendFile(path.join(ROOT, 'public', 'index.html')));
 
+onJoin(async (user, via) => {
+  await notifyAdmins(
+    `👋 <b>${String(user.name).replace(/[<>&]/g, '')}</b>${user.username ? ` @${user.username}` : ''} приєднався ${via === 'invite' ? 'за запрошенням' : '(відкритий доступ)'} · роль: ${ROLES[user.role]}\nЗмінити роль: Mini App → Ще → Доступи.`,
+  );
+});
+
 onNewUser(async (user) => {
   const kb = new InlineKeyboard()
     .text('✅ Дозволити', `user:active:${user.id}`)
+    .text('👑 Як адміна', `user:admin:${user.id}`)
+    .row()
     .text('🚫 Відхилити', `user:blocked:${user.id}`);
   await notifyAdmins(
     `👤 Нова заявка на доступ\n<b>${user.name}</b>${user.username ? ` @${user.username}` : ''}\nроль за замовчуванням: ${ROLES[user.role]}`,

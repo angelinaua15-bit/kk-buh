@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { all, get, getSetting, run, setSetting } from './db.js';
-import { authMiddleware, sessionToken } from './auth.js';
+import { INVITE_ROLES, authMiddleware, inviteLink, inviteRole, openAccess, openRole, resetInviteCode, sessionToken } from './auth.js';
 import { config } from './config.js';
 import { buildWorkbook } from './services/export.js';
 import {
@@ -320,6 +320,19 @@ api.post('/settings', guard(can.manageSettings), (req, res) => {
   }
   if (req.body.base_currency) recalcBase(req.user.id);
   res.json({ ok: true });
+});
+
+// запрошення за посиланням і відкритий доступ
+const inviteState = () => ({ link: inviteLink(), role: inviteRole(), open_access: openAccess(), open_role: openRole() });
+api.get('/invite', guard(can.manageUsers), (req, res) => res.json(inviteState()));
+api.post('/invite', guard(can.manageUsers), (req, res) => {
+  const b = req.body || {};
+  if (b.reset) resetInviteCode();
+  if (INVITE_ROLES.includes(b.role)) setSetting('invite_role', b.role);
+  if (INVITE_ROLES.includes(b.open_role)) setSetting('open_role', b.open_role);
+  if (typeof b.open_access === 'boolean') setSetting('open_access', b.open_access ? '1' : '0');
+  audit(req.user.id, 'invite_settings', 'settings', null, b);
+  res.json(inviteState());
 });
 
 api.get('/audit', guard(can.manageUsers), (req, res) => {

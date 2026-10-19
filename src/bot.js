@@ -30,7 +30,7 @@ function telegramFetch(url, opts = {}) {
   });
 }
 import { all, get, getSetting, run, setSetting } from './db.js';
-import { appUrl, upsertTelegramUser } from './auth.js';
+import { INVITE_ROLES, appUrl, inviteLink, inviteRole, openAccess, resetInviteCode, upsertTelegramUser } from './auth.js';
 import {
   ROLES, balances, can, createTx, dashboard, monthOf, setTxStatus, team, today, upcoming,
 } from './services/finance.js';
@@ -69,7 +69,26 @@ export const appBtn = (user) => {
 
 export function userFromCtx(ctx) {
   if (!ctx.from) return null;
-  return upsertTelegramUser(ctx.from);
+  const m = String(ctx.message?.text || '').match(/^\/start(?:@\w+)?\s+join_([a-f0-9]+)/i);
+  return upsertTelegramUser(ctx.from, { invite: m?.[1] });
+}
+
+const ROLE_HINT = {
+  admin: 'бачить і редагує все, керує доступами',
+  finance: 'бачить усе, вносить і підтверджує операції',
+  member: 'вносить свої операції, бачить свої проєкти',
+  viewer: 'лише переглядає звіти',
+};
+function inviteText() {
+  return `🔗 <b>Запрошення в бухгалтерію</b>\n\n${inviteLink()}\n\n`
+    + `Хто відкриє це посилання, одразу отримає роль <b>${ROLES[inviteRole()]}</b> — ${ROLE_HINT[inviteRole()]}.\n`
+    + `Надішли його людям, яким довіряєш. Якщо посилання потрапило не туди — натисни «🔄 Новий код», і старе перестане працювати.`
+    + (openAccess() ? '\n\n⚠️ Зараз увімкнено <b>відкритий доступ</b>: будь-хто, хто напише боту, отримує доступ.' : '');
+}
+function inviteKb() {
+  const kb = new InlineKeyboard();
+  INVITE_ROLES.forEach((r, i) => { kb.text(`${inviteRole() === r ? '● ' : ''}${ROLES[r]}`, `inv:role:${r}`); if (i === 1) kb.row(); });
+  return kb.row().text('🔄 Новий код', 'inv:reset');
 }
 
 function needActive(ctx, user) {
@@ -119,8 +138,10 @@ if (bot) {
           menu_button: { type: 'web_app', text: 'Бухгалтерія', web_app: { url: appUrl(u.tg_id) } },
         }).catch(() => {});
       }
+      const joined = /\sjoin_/.test(ctx.message?.text || '');
       await ctx.reply(
         `🦍 <b>${config.companyName}</b> · бухгалтерія\n\n` +
+          (joined ? `✅ Ти в команді! Доступ відкрито за запрошенням.\n\n` : '') +
           `Привіт, ${esc(u.name)}. Роль: <b>${ROLES[u.role] || u.role}</b>.\n\n` +
           `Тисни <b>🦍 Бухгалтерія KK</b> внизу або кнопку нижче.`,
         { parse_mode: 'HTML', reply_markup: webAppKb(u) },
@@ -129,6 +150,27 @@ if (bot) {
       console.error('/start', e);
       await ctx.reply('🦍 Бухгалтерія KK. Тисни кнопку внизу або /app.', { reply_markup: webAppKb(ctx.kk || ctx.from) }).catch(() => {});
     }
+  });
+
+  bot.command(['invite', 'admins'], async (ctx) => {
+    if (!needActive(ctx, ctx.kk)) return;
+    if (!can.manageUsers(ctx.kk)) return ctx.reply('Запрошувати людей може лише адмін.');
+    const team = all("SELECT name, username, role FROM users WHERE status='active' AND tg_id IS NOT NULL ORDER BY CASE role WHEN 'admin' THEN 0 WHEN 'finance' THEN 1 WHEN 'member' THEN 2 ELSE 3 END, name");
+    const list = team.map((u) => `• ${esc(u.name)}${u.username ? ` @${esc(u.username)}` : ''} — ${ROLES[u.role]}`).join('\n');
+    await ctx.reply(`${inviteText()}\n\n👥 <b>Зараз мають доступ:</b>\n${list || '—'}`, { parse_mode: 'HTML', reply_markup: inviteKb(), link_preview_options: { is_disabled: true } });
+  });
+  bot.callbackQuery(/^inv:role:(\w+)$/, async (ctx) => {
+    if (!can.manageUsers(ctx.kk)) return ctx.answerCallbackQuery({ text: 'Немає прав' });
+    if (!INVITE_ROLES.includes(ctx.match[1])) return ctx.answerCallbackQuery();
+    setSetting('invite_role', ctx.match[1]);
+    await ctx.editMessageText(inviteText(), { parse_mode: 'HTML', reply_markup: inviteKb(), link_preview_options: { is_disabled: true } }).catch(() => {});
+    await ctx.answerCallbackQuery({ text: `Роль за посиланням: ${ROLES[ctx.match[1]]}` });
+  });
+  bot.callbackQuery('inv:reset', async (ctx) => {
+    if (!can.manageUsers(ctx.kk)) return ctx.answerCallbackQuery({ text: 'Немає прав' });
+    resetInviteCode();
+    await ctx.editMessageText(inviteText(), { parse_mode: 'HTML', reply_markup: inviteKb(), link_preview_options: { is_disabled: true } }).catch(() => {});
+    await ctx.answerCallbackQuery({ text: 'Старе посилання більше не працює' });
   });
 
   bot.command('app', async (ctx) => {
@@ -183,15 +225,17 @@ if (bot) {
     await ctx.editMessageText(ctx.callbackQuery.message.text + '\n\n❌ Відхилено').catch(() => {});
     await ctx.answerCallbackQuery({ text: 'Відхилено' });
   });
-  bot.callbackQuery(/^user:(active|blocked):(\d+)$/, async (ctx) => {
+  bot.callbackQuery(/^user:(active|blocked|admin):(\d+)$/, async (ctx) => {
     if (!can.manageUsers(ctx.kk)) return ctx.answerCallbackQuery({ text: 'Немає прав' });
     const id = Number(ctx.match[2]);
     const { run } = await import('./db.js');
-    run('UPDATE users SET status=? WHERE id=?', ctx.match[1], id);
+    const asAdmin = ctx.match[1] === 'admin';
+    if (asAdmin) run("UPDATE users SET status='active', role='admin' WHERE id=?", id);
+    else run('UPDATE users SET status=? WHERE id=?', ctx.match[1], id);
     const u = get('SELECT * FROM users WHERE id=?', id);
     if (!u) return ctx.answerCallbackQuery({ text: 'Користувача не знайдено' });
-    await ctx.editMessageText(`${u.name} · ${ctx.match[1] === 'active' ? 'доступ надано' : 'заблоковано'}`);
-    if (u.tg_id && ctx.match[1] === 'active') {
+    await ctx.editMessageText(`${u.name} · ${asAdmin ? 'тепер адмін 👑' : ctx.match[1] === 'active' ? 'доступ надано' : 'заблоковано'}`);
+    if (u.tg_id && ctx.match[1] !== 'blocked') {
       await bot.api.sendMessage(u.tg_id, `✅ Доступ до бухгалтерії ${config.companyName} підтверджено.`, { reply_markup: webAppKb(u) }).catch(() => {});
     }
     await ctx.answerCallbackQuery();
@@ -872,6 +916,7 @@ export async function startBot() {
     await bot.api.setMyCommands([
       { command: 'start', description: 'Відкрити бухгалтерію' },
       { command: 'app', description: 'Mini App' },
+      { command: 'invite', description: 'Запросити людей / адмінів' },
       { command: 'balance', description: 'Баланси рахунків' },
       { command: 'report', description: 'Звіт за місяць' },
       { command: 'pending', description: 'Операції на перевірці' },
