@@ -171,3 +171,7 @@ ol.muted { padding-left: 18px; line-height: 1.6; }
 .filters { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
 
 .invite__link{font:600 13px/1.4 ui-monospace,Menlo,monospace;word-break:break-all;padding:10px 12px;border-radius:12px;background:rgba(127,127,160,.12);user-select:all}
+/* селекти поза формами (Доступи, запрошення) — темні, читабельні */
+.card select, .invite select { flex: 1; min-width: 0; height: 40px; padding: 0 10px; border-radius: 10px; background: var(--bg); color: var(--text); border: 1px solid var(--line); }
+.invite label { display: grid; gap: 6px; font-size: 13px; color: var(--muted); }
+.invite label.switch { display: flex; justify-content: space-between; align-items: center; color: var(--text); font-size: 15px; }

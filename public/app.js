@@ -621,6 +621,7 @@ async function renderUsers() {
       <label class="switch">Відкритий доступ для всіх <input type="checkbox" id="invOpen" ${inv.open_access ? 'checked' : ''}></label>
       <p class="muted" style="margin-top:6px">⚠️ Будь-хто, хто знайде бота й натисне Start, одразу отримає роль «${ROLES[inv.open_role]}» і бачитиме фінанси. Краще користуватися посиланням вище.</p>
     </div>` : '';
+  window.scrollTo(0, 0);
   view().innerHTML = `<h1>Доступи</h1>${invite}${rows.map((u) => `<div class="card">
     <div class="row"><b>${esc(u.name)}</b><span class="tag ${u.status==='pending'?'amber':u.status==='blocked'?'red':'green'}">${USTATUS[u.status]}</span></div>
     <div class="muted">@${esc(u.username||'—')} · ${ROLES[u.role]}</div>
