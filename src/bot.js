@@ -42,7 +42,7 @@ import {
 } from './services/extras.js';
 import { dailyRates, makeBackup, monoEnabled, syncMono } from './services/integrations.js';
 import {
-  canBeAssignee, createPage, dueDigest, getPage, myOpenTasks, pageAppUrl, parseTaskText, priorityName, statusName, taskLine, updatePage,
+  addPerson, assignable, canBeAssignee, claimTaskLink, createPage, taskInviteLink, dueDigest, getPage, myOpenTasks, pageAppUrl, parseTaskText, priorityName, statusName, taskLine, updatePage,
 } from './services/tasks.js';
 import { METHODS, SECTIONS, calcDeal, dealBalances, getDeal, listDeals, monthlySummary, normalizeDeal, parseDate, parseMoney, saveDeal } from './services/deals.js';
 
@@ -128,6 +128,18 @@ if (bot) {
       const u = ctx.kk;
       if (!u) {
         return ctx.reply('🦍 King Kong Lab · бухгалтерія\nНапиши /start ще раз.');
+      }
+      const tm = String(ctx.message?.text || '').match(/\stask_(\d+)(?:_([a-f0-9]+))?/);
+      if (tm) {
+        try {
+          const claimed = tm[2] ? claimTaskLink(Number(tm[1]), tm[2], u) : null;
+          const me = claimed || u;
+          ctx.kk = me;
+          const p = getPage(Number(tm[1]));
+          if (p.assignee_id === me.id || me.status === 'active') {
+            return ctx.reply(`📌 ${p.assignee_id === me.id ? 'Тобі призначено задачу' : 'Задача'} в ${esc(config.companyName)}\n\n${taskCard(p)}\n\nКоли задачу призначать ще раз — сповіщення прийде сюди.`, { parse_mode: 'HTML', reply_markup: taskKb(p, me) });
+          }
+        } catch {}
       }
       if (u.status === 'pending') {
         return ctx.reply(
@@ -273,11 +285,27 @@ if (bot) {
     return quickTask(ctx, u, text);
   });
   bot.command(['tasks', 'mytasks'], (ctx) => needActive(ctx, ctx.kk) && sendMyTasks(ctx, ctx.kk));
+  bot.callbackQuery(/^tk:as:(\d+)$/, async (ctx) => {
+    const u = ctx.kk;
+    if (!u || u.status !== 'active' || u.role === 'viewer') return ctx.answerCallbackQuery({ text: 'Немає доступу' });
+    await ctx.answerCallbackQuery();
+    return askAssignee(ctx, u, Number(ctx.match[1]));
+  });
+  bot.callbackQuery(/^tk:set:(\d+):(\d+)$/, async (ctx) => {
+    const u = ctx.kk;
+    if (!u || u.status !== 'active' || u.role === 'viewer') return ctx.answerCallbackQuery({ text: 'Немає доступу' });
+    assignWait.delete(u.id);
+    try {
+      await ctx.answerCallbackQuery({ text: 'Призначено' });
+      await assignTo(ctx, u, Number(ctx.match[1]), Number(ctx.match[2]), true);
+    } catch (e) { await ctx.answerCallbackQuery({ text: e.message }).catch(() => {}); }
+  });
   bot.callbackQuery(/^tk:(done|doing|review|todo|tmr|me|view):(\d+)$/, async (ctx) => {
     const u = ctx.kk;
-    if (!u || u.status !== 'active') return ctx.answerCallbackQuery({ text: 'Немає доступу' });
     const [, act, idStr] = ctx.match;
     const id = Number(idStr);
+    const own = u && u.status !== 'blocked' && get('SELECT assignee_id FROM pages WHERE id = ?', id)?.assignee_id === u.id;
+    if (!u || (u.status !== 'active' && !own)) return ctx.answerCallbackQuery({ text: 'Немає доступу' });
     try {
       if (act === 'view') {
         await ctx.answerCallbackQuery();
@@ -428,6 +456,15 @@ if (bot) {
     const u = ctx.kk;
     if (!needActive(ctx, u)) return;
 
+    if (assignWait.has(u.id) && !textMap[t]) {
+      const pageId = assignWait.get(u.id);
+      assignWait.delete(u.id);
+      try {
+        const person = addPerson({ name: t }, u);
+        return assignTo(ctx, u, pageId, person.id);
+      } catch (e) { return ctx.reply(`⚠️ ${e.message}`); }
+    }
+    if (textMap[t]) assignWait.delete(u.id);
     if (textMap[t] === 'newtask') {
       if (u.role === 'viewer') return ctx.reply('У режимі перегляду не можна створювати задачі.');
       pendingTask.set(u.id, true);
@@ -485,6 +522,22 @@ if (bot) {
       return ctx.reply('Не зрозумів, це дохід чи витрата 🤔\nНапиши, наприклад: <code>+1200 сайт клієнта</code>, <code>-300 реклама</code> або «отримала 500$ від ABV».', { parse_mode: 'HTML' });
     }
     return next();
+  });
+
+  // поділилися контактом (з Telegram чи телефонної книги) — додаємо людину, щоб призначати на задачі
+  bot.on('message:contact', async (ctx) => {
+    const u = ctx.kk;
+    if (!needActive(ctx, u)) return;
+    if (u.role === 'viewer') return ctx.reply('У режимі перегляду не можна додавати людей.');
+    const c = ctx.message.contact;
+    try {
+      const person = addPerson({ name: [c.first_name, c.last_name].filter(Boolean).join(' '), phone: c.phone_number, tg_id: c.user_id }, u);
+      const pageId = assignWait.get(u.id);
+      if (pageId) { assignWait.delete(u.id); return assignTo(ctx, u, pageId, person.id); }
+      return ctx.reply(`📇 ${person.existed ? 'Вже є в команді' : 'Додано в контакти'}: <b>${esc(person.name)}</b>${person.phone ? ` · ${esc(person.phone)}` : ''}\n\nТепер цю людину можна призначати відповідальною: у Mini App або <code>/task … @${esc(person.username || person.name.split(' ')[0])}</code>.${person.status === 'contact' ? '\nДоступу до бухгалтерії в неї немає — лише задачі.' : ''}`, { parse_mode: 'HTML' });
+    } catch (e) {
+      return ctx.reply(`⚠️ ${e.message}`);
+    }
   });
 
   bot.on('message:voice', async (ctx) => {
@@ -942,6 +995,38 @@ function monthCard(d) {
 
 /* ───────── задачі ───────── */
 const pendingTask = new Map();
+const assignWait = new Map(); // хто зараз обирає відповідального → id задачі
+
+async function askAssignee(ctx, u, pageId) {
+  const page = getPage(pageId);
+  assignWait.set(u.id, pageId);
+  const people = assignable().slice(0, 12);
+  const kb = new InlineKeyboard();
+  people.forEach((p, i) => {
+    kb.text(`${p.id === page.assignee_id ? '● ' : ''}${p.id === u.id ? '🙋 Я' : p.name}${p.status === 'contact' ? ' 📇' : ''}`.slice(0, 30), `tk:set:${pageId}:${p.id}`);
+    if (i % 2 === 1) kb.row();
+  });
+  return ctx.reply(
+    `👤 Кого призначити на «${esc(page.title || 'Без назви')}»?\n\n`
+    + 'Обери зі списку, або:\n• напиши <b>@нік</b> у Telegram чи імʼя,\n• або надішли контакт: 📎 → <b>Контакт</b> (можна з телефонної книги).',
+    { parse_mode: 'HTML', reply_markup: kb },
+  );
+}
+/** Призначає задачу й підказує, як повідомити людину, якщо вона ще не в боті. */
+async function assignTo(ctx, u, pageId, personId, edit = false) {
+  const { page } = updatePage(pageId, { assignee_id: personId }, u);
+  const person = get('SELECT * FROM users WHERE id = ?', personId);
+  const reachable = person.tg_id && person.notify && person.status !== 'contact';
+  if (personId !== u.id && reachable) await notifyTask('assigned', page, u);
+  let note = '';
+  if (personId !== u.id && !reachable) {
+    note = `\n\n📨 ${esc(person.name)} ще не користується ботом — перешли посилання, щоб людина отримала задачу й сповіщення:\n${taskInviteLink(pageId, personId)}`;
+  }
+  const text = `✅ Відповідальний: <b>${esc(person.name)}</b>\n\n${taskCard(page)}${note}`;
+  const opts = { parse_mode: 'HTML', reply_markup: taskKb(page, u), link_preview_options: { is_disabled: true } };
+  if (edit) return ctx.editMessageText(text, opts).catch(() => ctx.reply(text, opts));
+  return ctx.reply(text, opts);
+}
 const addDay = (iso, n) => { const d = new Date(`${iso}T12:00:00Z`); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
 const ddmm = (iso) => (iso ? `${iso.slice(8, 10)}.${iso.slice(5, 7)}` : '');
 
@@ -964,6 +1049,7 @@ function taskKb(p, viewer = null) {
     else kb.text('👀 На перевірку', `tk:review:${p.id}`);
     kb.row().text('📅 На завтра', `tk:tmr:${p.id}`);
     if (!p.assignee_id && canBeAssignee(viewer?.id)) kb.text('🙋 Беру', `tk:me:${p.id}`);
+    if (viewer?.status === 'active' && viewer.role !== 'viewer') kb.text(p.assignee_id ? '👤 Змінити' : '👤 Призначити', `tk:as:${p.id}`);
   } else {
     kb.text('↩️ Повернути в роботу', `tk:doing:${p.id}`);
   }
@@ -975,8 +1061,13 @@ async function quickTask(ctx, u, text) {
   const parsed = parseTaskText(text, today());
   if (!parsed.title) return ctx.reply('Порожня задача 🤔 Напиши, що треба зробити.');
   const page = createPage({ kind: 'task', status: 'todo', ...parsed, assignee_id: parsed.assignee_id || (canBeAssignee(u.id) ? u.id : null) }, u);
-  if (page.assignee_id && page.assignee_id !== u.id) notifyTask('assigned', page, u);
-  return ctx.reply(`Додано ✨\n\n${taskCard(page)}`, { parse_mode: 'HTML', reply_markup: taskKb(page, u) });
+  let note = '';
+  if (page.assignee_id && page.assignee_id !== u.id) {
+    const person = get('SELECT * FROM users WHERE id = ?', page.assignee_id);
+    if (person.tg_id && person.notify && person.status !== 'contact') notifyTask('assigned', page, u);
+    else note = `\n\n📨 ${esc(person.name)} ще не в боті — перешли посилання:\n${taskInviteLink(page.id, person.id)}`;
+  }
+  return ctx.reply(`Додано ✨\n\n${taskCard(page)}${note}`, { parse_mode: 'HTML', reply_markup: taskKb(page, u), link_preview_options: { is_disabled: true } });
 }
 async function sendMyTasks(ctx, u) {
   const rows = myOpenTasks(u.id, 12);

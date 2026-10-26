@@ -58,7 +58,7 @@ async function waitInitData(ms = 2500) {
 const SYM = { UAH: '₴', USD: '$', EUR: '€', USDT: '₮', PLN: 'zł', GBP: '£' };
 const TYPE = { income: 'Дохід', expense: 'Витрата', transfer: 'Переказ' };
 const PSTATUS = { lead: 'Лід', active: 'В роботі', paused: 'Пауза', done: 'Завершено', cancelled: 'Скасовано' };
-const USTATUS = { pending: 'Очікує', active: 'Активний', blocked: 'Блок' };
+const USTATUS = { pending: 'Очікує', active: 'Активний', blocked: 'Блок', contact: 'Контакт (без доступу)' };
 const ROLES = { admin: 'Адмін', finance: 'Фінансист', member: 'Команда', viewer: 'Перегляд' };
 
 const state = { me: null, boot: null, tab: 'dash', month: ymNow(), dash: null, tx: null, filters: { type: '', status: '' } };

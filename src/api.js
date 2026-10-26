@@ -18,7 +18,7 @@ import { createDocument, listDocuments, renderDocument, requisites, saveRequisit
 import { linkMonoAccount, makeBackup, monoAccounts, monoEnabled, setMonoWebhook, syncMono } from './services/integrations.js';
 import { aiEnabled } from './services/ai.js';
 import {
-  COVERS, PAGE_TEMPLATES, assignable, PRIORITIES, STATUSES, addComment, createPage, deleteComment, duplicatePage, getPage, listPages,
+  COVERS, PAGE_TEMPLATES, addPerson, assignable, taskInviteLink, PRIORITIES, STATUSES, addComment, createPage, deleteComment, duplicatePage, getPage, listPages,
   purgePage, restorePage, tagList, trashPage, updatePage,
 } from './services/tasks.js';
 import { METHODS, SECTIONS, dealBalances, deleteDeal, getDeal, importSnapshot, listDeals, monthlySummary, saveDeal } from './services/deals.js';
@@ -549,6 +549,13 @@ function pageQuery(req) {
   else if (q.parent) q.parent_id = Number(q.parent);
   return q;
 }
+/** Якщо відповідальний ще не користується ботом — посилання, яке йому треба переслати. */
+function withReach(page, actor) {
+  if (!page.assignee_id || page.assignee_id === actor.id) return page;
+  const u = get('SELECT id, name, tg_id, status, notify FROM users WHERE id = ?', page.assignee_id);
+  if (u && !(u.tg_id && u.notify && u.status !== 'contact')) page.assignee_invite = taskInviteLink(page.id, u.id);
+  return page;
+}
 /** Сповіщення в Telegram: призначили задачу / новий коментар. Не блокує відповідь. */
 function notifyPage(kind, page, actor, extra = {}) {
   import('./bot.js').then(({ notifyTask }) => notifyTask?.(kind, page, actor, extra)).catch((e) => console.warn('notify page', e.message || e));
@@ -559,6 +566,11 @@ api.get('/pages/meta', (req, res) => res.json({
   members: assignable(),
   projects: all("SELECT id, name, status, section FROM projects WHERE status != 'cancelled' ORDER BY closed, id DESC LIMIT 300"),
 }));
+/** Додати людину в контакти (щоб призначати на задачі): імʼя, @нік або телефон. */
+api.post('/people', writePages, (req, res) => {
+  const p = addPerson(req.body || {}, req.user);
+  res.status(p.existed ? 200 : 201).json({ id: p.id, name: p.name, username: p.username, phone: p.phone, status: p.status, has_tg: Boolean(p.tg_id), existed: Boolean(p.existed) });
+});
 api.get('/pages', (req, res) => res.json(listPages(pageQuery(req))));
 api.get('/pages/:id', (req, res) => res.json(getPage(needId(req))));
 api.post('/pages', writePages, (req, res) => {
@@ -566,13 +578,13 @@ api.post('/pages', writePages, (req, res) => {
   const tpl = PAGE_TEMPLATES[body.template] ? PAGE_TEMPLATES[body.template]() : {};
   const page = createPage({ ...tpl, ...Object.fromEntries(Object.entries(body).filter(([k, v]) => k !== 'template' && v !== undefined && !(k === 'title' && !v && tpl.title))) }, req.user);
   if (page.assignee_id && page.assignee_id !== req.user.id) notifyPage('assigned', page, req.user);
-  res.status(201).json(page);
+  res.status(201).json(withReach(page, req.user));
 });
 api.patch('/pages/:id', writePages, (req, res) => {
   const { page, before } = updatePage(needId(req), req.body || {}, req.user);
   if (page.assignee_id && page.assignee_id !== before.assignee_id && page.assignee_id !== req.user.id) notifyPage('assigned', page, req.user);
   if (page.status !== before.status && page.status === 'done' && before.created_by && before.created_by !== req.user.id) notifyPage('done', page, req.user, { to: before.created_by });
-  res.json(page);
+  res.json(page.assignee_id !== before.assignee_id ? withReach(page, req.user) : page);
 });
 api.post('/pages/:id/duplicate', writePages, (req, res) => res.status(201).json(duplicatePage(needId(req), req.user)));
 api.delete('/pages/:id', writePages, (req, res) => res.json(trashPage(needId(req), req.user)));

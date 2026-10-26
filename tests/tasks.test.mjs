@@ -101,7 +101,7 @@ try {
     assert.ok(s.pages.length >= 2);
     await ok('DELETE', `/comments/${c.id}`);
   });
-  await test('viewer read-only; member writes; only admins can be assignees', async () => {
+  await test('viewer read-only; member writes; anyone in team can be assignee', async () => {
     // заводимо людей через API доступів
     const { DatabaseSync } = await import('node:sqlite');
     const db = new DatabaseSync(env.DB_PATH);
@@ -113,13 +113,37 @@ try {
     const m = await ok('POST', '/pages', { title: 'Задача від команди', assignee_id: null }, 5002);
     const memberId = (await ok('GET', '/me', null, 5002)).user.id;
     const adminId = (await ok('GET', '/me')).user.id;
-    assert.equal((await call('PATCH', `/pages/${m.id}`, { assignee_id: memberId }, 5002)).status, 400);
-    const meta2 = await ok('GET', '/pages/meta');
-    assert.ok(meta2.members.every((u) => u.role === 'admin'));
-    assert.ok(!meta2.members.some((u) => u.id === memberId));
+    const self = await ok('PATCH', `/pages/${m.id}`, { assignee_id: memberId }, 5002);
+    assert.equal(self.assignee_name, 'Олег');
+    assert.ok((await ok('GET', '/pages/meta')).members.some((u) => u.id === memberId));
     const assigned = await ok('PATCH', `/pages/${m.id}`, { assignee_id: adminId }, 5002);
     assert.equal(assigned.assignee_name, 'Ангеліна');
     assert.ok((await ok('GET', '/pages?kind=task&assignee=me')).some((x) => x.id === m.id));
+  });
+  await test('add people by @nick / phone / name; assign; invite link for people not in bot', async () => {
+    const a = await ok('POST', '/people', { name: '@Olena_Design' });
+    assert.equal(a.username, 'Olena_Design');
+    assert.equal(a.status, 'contact');
+    const again = await ok('POST', '/people', { name: 'https://t.me/olena_design' });
+    assert.equal(again.id, a.id);
+    assert.ok(again.existed);
+    const ph = await ok('POST', '/people', { name: '097 123 45 67' });
+    assert.equal(ph.phone, '+380971234567');
+    const nm = await ok('POST', '/people', { name: 'Майстер Василь' });
+    assert.equal(nm.name, 'Майстер Василь');
+    assert.equal((await call('POST', '/people', { name: '' })).status, 400);
+    assert.equal((await call('POST', '/people', { name: 'x' }, 5001)).status, 403);
+    const meta3 = await ok('GET', '/pages/meta');
+    assert.ok([a.id, ph.id, nm.id].every((id) => meta3.members.some((u) => u.id === id)));
+    const t = await ok('POST', '/pages', { title: 'Банер', assignee_id: a.id });
+    assert.match(t.assignee_invite, /start=task_\d+_[a-f0-9]{10}$/);
+    const t2 = await ok('PATCH', `/pages/${t.id}`, { assignee_id: nm.id });
+    assert.ok(t2.assignee_invite);
+    const self = await ok('PATCH', `/pages/${t.id}`, { assignee_id: (await ok('GET', '/me')).user.id });
+    assert.equal(self.assignee_invite, undefined);
+    // контакт не має доступу до бухгалтерії
+    const users = await ok('GET', '/users');
+    assert.equal(users.find((u) => u.id === nm.id).status, 'contact');
   });
   await test('deleted (cancelled) project: task stays, project hidden from pickers', async () => {
     const deal = await ok('POST', '/deals', { section: 'Розробки', task: 'Лендинг', price: { amount: 10000, currency: 'USD' } });

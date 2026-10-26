@@ -97,6 +97,21 @@ export function upsertTelegramUser(tg, opts = {}) {
   const isAdmin = config.adminIds.includes(Number(tg.id)) || (config.devMode && !config.adminIds.length);
   const invited = validInvite(opts.invite);
   let user = get('SELECT * FROM users WHERE tg_id = ?', tg.id);
+  // людину додали в контакти за @ніком ще до того, як вона написала боту, — привʼязуємо
+  if (!user && tg.username) {
+    const c = get("SELECT * FROM users WHERE tg_id IS NULL AND status = 'contact' AND lower(username) = lower(?)", tg.username);
+    if (c) { run('UPDATE users SET tg_id = ? WHERE id = ?', tg.id, c.id); user = get('SELECT * FROM users WHERE id = ?', c.id); }
+  }
+  // контакт (його можна призначати на задачі) вперше відкрив бота — далі як звичайна реєстрація
+  if (user && user.status === 'contact') {
+    const auto = isAdmin ? 'admin' : invited ? inviteRole() : openAccess() ? openRole() : null;
+    run("UPDATE users SET role = ?, status = ?, notify = 1, name = CASE WHEN name LIKE '@%' OR name = '' THEN ? ELSE name END WHERE id = ?",
+      auto || 'member', auto ? 'active' : 'pending', name, user.id);
+    user = get('SELECT * FROM users WHERE id = ?', user.id);
+    audit(user.id, 'register', 'user', user.id, { tg_id: tg.id, username: tg.username, via: auto ? (invited ? 'invite' : 'open') : 'contact' });
+    if (!isAdmin && !auto) for (const fn of listeners) Promise.resolve(fn(user)).catch(() => {});
+    if (!isAdmin && auto) for (const fn of joinListeners) Promise.resolve(fn(user, invited ? 'invite' : 'open')).catch(() => {});
+  }
   if (!user) {
     const auto = invited ? inviteRole() : openAccess() ? openRole() : null;
     const r = run(

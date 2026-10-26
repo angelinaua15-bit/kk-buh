@@ -289,9 +289,8 @@ await test('HTML in names is escaped', async () => {
 await test('/task → task with assignee, due, priority, tags; buttons work', async () => {
   run("INSERT OR IGNORE INTO users(tg_id, name, username, role, status) VALUES(9777, 'Олена Дизайн', 'olena_d', 'admin', 'active')");
   run("INSERT OR IGNORE INTO users(tg_id, name, username, role, status) VALUES(9778, 'Ігор Команда', 'igor_m', 'member', 'active')");
-  // не адміна відповідальним не призначаємо — @нік лишається в назві
   await text(111, '/task Перевірити рекламу @igor_m');
-  assert.equal(get("SELECT assignee_id FROM pages WHERE title LIKE 'Перевірити рекламу%'").assignee_id, get('SELECT id FROM users WHERE tg_id=111').id);
+  assert.equal(get("SELECT assignee_id FROM pages WHERE title = 'Перевірити рекламу'").assignee_id, get('SELECT id FROM users WHERE tg_id=9778').id);
   await text(111, '/task Банер для ABV @olena_d завтра !! #дизайн');
   const r = lastReply();
   assert.match(r.payload.text, /Банер для ABV/);
@@ -322,6 +321,44 @@ await test('📝 Задача button → next message becomes a task, not an ope
   assert.equal(get('SELECT COUNT(*) AS n FROM transactions').n, txBefore);
   const p = get("SELECT * FROM pages WHERE title LIKE 'Оплатити 300 грн%'");
   assert.ok(p && p.due && p.assignee_id);
+});
+
+await test('assign via 👤 → @nick creates contact; signed link attaches their Telegram', async () => {
+  await text(111, '/task Зняти відео для Reels');
+  const p = get("SELECT * FROM pages WHERE title = 'Зняти відео для Reels'");
+  assert.ok(lastKbData().includes(`tk:as:${p.id}`));
+  await tap(111, `tk:as:${p.id}`);
+  assert.match(lastReply().payload.text, /Кого призначити/);
+  await text(111, '@reels_master');
+  const c = get("SELECT * FROM users WHERE username = 'reels_master'");
+  assert.equal(c.status, 'contact');
+  assert.equal(get('SELECT assignee_id FROM pages WHERE id=?', p.id).assignee_id, c.id);
+  const msg = lastReply().payload.text;
+  const link = msg.match(/start=(task_\d+_[a-f0-9]+)/)[1];
+  // людина з іншим ніком відкриває підписане посилання → її Telegram привʼязується до контакту
+  await bot.handleUpdate({ update_id: upd++, message: { message_id: upd, date: 0, chat: { id: 9888, type: 'private' }, from: { id: 9888, is_bot: false, first_name: 'Рілс', username: 'other_nick' }, text: `/start ${link}`, entities: [{ type: 'bot_command', offset: 0, length: 6 }] } });
+  assert.match(lastReply().payload.text, /Тобі призначено задачу/);
+  const linked = get('SELECT * FROM users WHERE tg_id = 9888');
+  assert.equal(linked.id, c.id);
+  assert.equal(linked.status, 'pending');
+  assert.equal(get('SELECT COUNT(*) AS n FROM users WHERE tg_id = 9888').n, 1);
+  // може закрити свою задачу, хоч доступу до бухгалтерії ще немає
+  await tap(9888, `tk:done:${p.id}`);
+  assert.equal(get('SELECT status FROM pages WHERE id=?', p.id).status, 'done');
+  // чуже посилання / підробка — нічого не привʼязує
+  await text(9999, `/start task_${p.id}_0000000000`);
+  assert.notEqual(get('SELECT id FROM users WHERE tg_id = 9999').id, c.id);
+});
+
+await test('shared phone contact → added and assigned when picking', async () => {
+  await text(111, '/task Подзвонити бухгалтеру');
+  const p = get("SELECT * FROM pages WHERE title = 'Подзвонити бухгалтеру'");
+  await tap(111, `tk:as:${p.id}`);
+  await bot.handleUpdate({ update_id: upd++, message: { message_id: upd, date: 0, chat: { id: 111, type: 'private' }, from: from(111), contact: { phone_number: '380501112233', first_name: 'Ірина', last_name: 'Бух' } } });
+  const c = get("SELECT * FROM users WHERE phone = '+380501112233'");
+  assert.equal(c.name, 'Ірина Бух');
+  assert.equal(get('SELECT assignee_id FROM pages WHERE id=?', p.id).assignee_id, c.id);
+  assert.match(lastReply().payload.text, /ще не користується ботом/);
 });
 
 await test('/tasks lists my open tasks with ✅ buttons', async () => {

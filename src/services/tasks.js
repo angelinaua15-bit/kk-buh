@@ -5,8 +5,11 @@
  */
 import { all, db, get, run, tx } from '../db.js';
 import { HttpError, audit, today } from './finance.js';
+import crypto from 'node:crypto';
 import { config } from '../config.js';
+import { getSetting, setSetting } from '../db.js';
 
+{ const cols = all('PRAGMA table_info(users)').map((c) => c.name); if (!cols.includes('phone')) db.exec('ALTER TABLE users ADD COLUMN phone TEXT'); }
 db.exec(`
 CREATE TABLE IF NOT EXISTS pages (
   id INTEGER PRIMARY KEY,
@@ -60,11 +63,42 @@ export const PRIORITIES = [
 const STATUS_IDS = STATUSES.map((s) => s.id);
 const PRIORITY_IDS = PRIORITIES.map((p) => p.id);
 export const BLOCK_TYPES = ['p', 'h1', 'h2', 'h3', 'todo', 'bullet', 'number', 'quote', 'callout', 'divider', 'code', 'toggle', 'page'];
-/** Відповідальним можна призначити лише адмінів (повний доступ). */
-export const ASSIGNABLE_ROLES = ['admin'];
-const ASSIGNABLE_SQL = `status = 'active' AND role IN (${ASSIGNABLE_ROLES.map((r) => `'${r}'`).join(',')})`;
-export const assignable = () => all(`SELECT id, name, username, role FROM users WHERE ${ASSIGNABLE_SQL} ORDER BY name`);
+/**
+ * Відповідальним можна призначити будь-кого з команди або контактів (крім заблокованих).
+ * Контакт (status='contact') — людина, яку додали з Telegram / телефонної книги; доступу до бухгалтерії не має.
+ */
+const ASSIGNABLE_SQL = "status IN ('active','pending','contact')";
+export const assignable = () => all(`SELECT id, name, username, phone, role, status, tg_id IS NOT NULL AS has_tg,
+    (tg_id IS NOT NULL AND status != 'contact') AS in_bot,
+    (SELECT COUNT(*) FROM pages p WHERE p.assignee_id = users.id AND p.deleted_at IS NULL) AS tasks
+  FROM users WHERE ${ASSIGNABLE_SQL} ORDER BY status = 'active' DESC, tasks DESC, name`);
 export const canBeAssignee = (id) => Boolean(id && get(`SELECT id FROM users WHERE id = ? AND ${ASSIGNABLE_SQL}`, Number(id)));
+
+/** Новий контакт: «@nick», «+380…» або просто імʼя. Повертає наявного, якщо вже є. */
+export function addPerson({ name, username, phone, tg_id } = {}, actor = null) {
+  let n = String(name || '').trim().slice(0, 80);
+  let u = String(username || '').trim().replace(/^@/, '').replace(/^https?:\/\/t\.me\//i, '');
+  let ph = String(phone || '').replace(/[^\d+]/g, '');
+  const m = n.match(/^(?:@|https?:\/\/t\.me\/)([\w\d_]{3,32})$/i);
+  if (m && !u) { u = m[1]; n = ''; }
+  if (!ph && /^\+?[\d\s()-]{9,}$/.test(n)) { ph = n.replace(/[^\d+]/g, ''); n = ''; }
+  if (u && !/^[\w\d_]{3,32}$/.test(u)) throw bad('Невірний нік у Telegram');
+  if (ph && ph.replace(/\D/g, '').length < 9) throw bad('Невірний номер телефону');
+  if (ph && !ph.startsWith('+')) ph = ph.startsWith('380') ? `+${ph}` : ph.startsWith('0') ? `+38${ph}` : `+${ph}`;
+  if (!n && !u && !ph && !tg_id) throw bad('Вкажи імʼя, @нік або телефон');
+  const found = (tg_id && get('SELECT * FROM users WHERE tg_id = ?', Number(tg_id)))
+    || (u && get('SELECT * FROM users WHERE lower(username) = lower(?)', u))
+    || (ph && get('SELECT * FROM users WHERE phone = ?', ph));
+  if (found) {
+    if (ph && !found.phone) run('UPDATE users SET phone = ? WHERE id = ?', ph, found.id);
+    if (found.status === 'blocked') throw bad(`${found.name} заблокований(а) — розблокуй у «Доступах»`);
+    return { ...get('SELECT * FROM users WHERE id = ?', found.id), existed: true };
+  }
+  const r = run("INSERT INTO users(tg_id, name, username, phone, role, status, notify) VALUES(?,?,?,?, 'member', 'contact', 1)",
+    tg_id ? Number(tg_id) : null, n || (u ? `@${u}` : ph), u || null, ph || null);
+  audit(actor?.id, 'create', 'contact', Number(r.lastInsertRowid), { name: n, username: u, phone: ph });
+  return get('SELECT * FROM users WHERE id = ?', r.lastInsertRowid);
+}
 export const COVERS = ['violet', 'blue', 'pink', 'green', 'amber', 'night', 'sunset'];
 
 const bad = (m) => new HttpError(400, m);
@@ -233,7 +267,7 @@ function normalize(body, existing) {
         if (v && !PRIORITY_IDS.includes(v)) throw bad('Невідомий пріоритет');
         out.priority = v || null; break;
       case 'assignee_id':
-        if (v && !canBeAssignee(v) && Number(v) !== existing?.assignee_id) throw bad('Відповідальним можна призначити лише адміна з повним доступом');
+        if (v && !canBeAssignee(v) && Number(v) !== existing?.assignee_id) throw bad('Цю людину не можна призначити (заблокована або не існує)');
         out.assignee_id = v ? Number(v) : null; break;
       case 'project_id':
         if (v && !get('SELECT id FROM projects WHERE id = ?', Number(v))) throw bad('Проєкт не знайдено');
@@ -414,8 +448,9 @@ export function parseTaskText(text, now = today()) {
   t = t.replace(/\s(!{1,3})(?=\s)/g, (_m, ex) => { out.priority = ex.length >= 2 ? 'urgent' : 'high'; return ' '; });
   t = t.replace(/\s@([\w\d_]{2,32})/g, (m, uname) => {
     const u = get(`SELECT id FROM users WHERE ${ASSIGNABLE_SQL} AND (lower(username) = lower(?) OR lower(name) = lower(?) OR lower(name) LIKE lower(?))`, uname, uname, `${uname} %`);
-    if (u) { out.assignee_id = u.id; return ' '; }
-    return m;
+    // незнайомий @нік — додаємо в контакти, щоб одразу призначити
+    out.assignee_id = (u || addPerson({ username: uname })).id;
+    return ' ';
   });
   const dateRe = /\s(?:до\s+|на\s+|в\s+|у\s+)?(сьогодні|завтра|післязавтра|(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?|пн|вт|ср|чт|пт|сб|нд|понеділок|вівторок|середу|середа|четвер|п['ʼ]ятницю|п['ʼ]ятниця|суботу|субота|неділю|неділя)(?=[\s,.!?]|$)/iu;
   const m = t.match(dateRe);
@@ -458,6 +493,39 @@ export function taskLine(p) {
   const due = p.due ? ` · ${p.overdue ? '🔴 ' : '📅 '}${p.due.slice(8, 10)}.${p.due.slice(5, 7)}` : '';
   const pr = p.priority === 'urgent' ? ' · ‼️' : p.priority === 'high' ? ' · ❗️' : '';
   return `${st} ${p.icon ? `${p.icon} ` : ''}${p.title || 'Без назви'}${due}${pr}${p.assignee_name ? ` · ${p.assignee_name}` : ''}`;
+}
+
+/** Посилання для людини, якій призначили задачу: t.me/<бот>?start=task_<id>_<підпис>. */
+function linkSecret() {
+  let s = getSetting('task_link_secret');
+  if (!s) { s = crypto.randomBytes(16).toString('hex'); setSetting('task_link_secret', s); }
+  return s;
+}
+export const taskToken = (pageId, userId) => crypto.createHmac('sha256', linkSecret()).update(`${pageId}:${userId}`).digest('hex').slice(0, 10);
+export function taskInviteLink(pageId, userId) {
+  const bot = getSetting('bot_username') || 'KKLabSystemBot';
+  return `https://t.me/${bot}?start=task_${pageId}_${taskToken(pageId, userId)}`;
+}
+/**
+ * Людина відкрила посилання на свою задачу. Якщо задачу призначено на контакт без Telegram,
+ * привʼязуємо цей Telegram-акаунт до контакту (і прибираємо щойно створений дубль).
+ */
+export function claimTaskLink(pageId, token, user) {
+  const page = get('SELECT id, assignee_id FROM pages WHERE id = ? AND deleted_at IS NULL', pageId);
+  if (!page?.assignee_id || token !== taskToken(pageId, page.assignee_id)) return null;
+  if (page.assignee_id === user.id) return user;
+  const contact = get('SELECT * FROM users WHERE id = ?', page.assignee_id);
+  if (!contact || contact.tg_id || contact.status !== 'contact') return null;
+  const fresh = get("SELECT * FROM users WHERE id = ? AND created_at >= datetime('now', '-10 minutes')", user.id);
+  const used = fresh && (get('SELECT 1 FROM transactions WHERE created_by = ? OR member_id = ? LIMIT 1', user.id, user.id) || get('SELECT 1 FROM pages WHERE assignee_id = ? OR created_by = ? LIMIT 1', user.id, user.id));
+  if (!fresh || used) return null;
+  tx(() => {
+    run('DELETE FROM audit WHERE entity = ? AND entity_id = ?', 'user', user.id);
+    run('DELETE FROM users WHERE id = ?', user.id);
+    run("UPDATE users SET tg_id = ?, username = COALESCE(?, username), status = ?, role = ?, notify = 1, last_seen = datetime('now'), name = CASE WHEN name LIKE '@%' OR name LIKE '+%' THEN ? ELSE name END WHERE id = ?",
+      user.tg_id, user.username, user.status === 'active' ? 'active' : 'pending', user.role, user.name, contact.id);
+  });
+  return get('SELECT * FROM users WHERE id = ?', contact.id);
 }
 
 export const pageAppUrl = (id) => {

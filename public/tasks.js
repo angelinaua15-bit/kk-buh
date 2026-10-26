@@ -68,7 +68,7 @@ function relDate(iso) {
   const d = new Date(`${iso}T12:00:00Z`);
   return d.toLocaleDateString('uk-UA', { day: 'numeric', month: 'short', ...(iso.slice(0, 4) !== t.slice(0, 4) ? { year: 'numeric' } : {}) });
 }
-const initials = (n) => String(n || '?').trim().split(/\s+/).slice(0, 2).map((w) => w[0]).join('').toUpperCase();
+const initials = (n) => String(n || '?').replace(/^[@+]/, '').trim().split(/\s+/).slice(0, 2).map((w) => w[0]).join('').toUpperCase();
 function avatar(name, cls = '') {
   if (!name) return '';
   let h = 0;
@@ -493,7 +493,7 @@ async function openTrash() {
 }
 
 /* ═══════════════ Пікер (випадаюче меню) ═══════════════ */
-function picker({ title, items, multi, search, value, onPick, extra, onCreate, anchor }) {
+function picker({ title, items, multi, search, value, onPick, extra, onCreate, anchor, createLabel }) {
   closePicker();
   const box = document.createElement('div');
   box.className = 'pk-wrap';
@@ -516,8 +516,8 @@ function picker({ title, items, multi, search, value, onPick, extra, onCreate, a
     const shown = items.filter((i) => !q || i.label.toLowerCase().includes(q) || (i.keys || '').includes(q));
     listEl.innerHTML = shown.map((i) => `<button class="pk-it ${(multi ? sel.has(i.id) : value === i.id) ? 'on' : ''}" data-v="${esc(String(i.id ?? ''))}">
       ${i.html || esc(i.label)}${i.hint ? `<small>${esc(i.hint)}</small>` : ''}${(multi ? sel.has(i.id) : value === i.id) ? '<em>✓</em>' : ''}</button>`).join('')
-      + (onCreate && q && !items.some((i) => i.label.toLowerCase() === q) ? `<button class="pk-it pk-create" data-create="1">＋ Створити «${esc(input.value.trim())}»</button>` : '')
-      + (!shown.length && !onCreate ? '<div class="pk-empty">Нічого не знайдено</div>' : '');
+      + (onCreate && q && !items.some((i) => i.label.toLowerCase() === q) ? `<button class="pk-it pk-create" data-create="1">${createLabel ? createLabel(input.value.trim()) : `＋ Створити «${esc(input.value.trim())}»`}</button>` : '')
+      + (!shown.length && !onCreate && items.length ? '<div class="pk-empty">Нічого не знайдено</div>' : '');
   };
   draw();
   input?.addEventListener('input', draw);
@@ -549,7 +549,22 @@ function propPicker(prop, row, anchor, apply) {
   const m = TK.meta;
   if (prop === 'status') return picker({ title: 'Статус', anchor, value: row.status, items: m.statuses.map((s) => ({ id: s.id, label: s.name, html: stPill(s.id) })), onPick: (v) => apply({ status: v }) });
   if (prop === 'priority') return picker({ title: 'Пріоритет', anchor, value: row.priority || '', items: [{ id: '', label: 'Без пріоритету', html: '<span class="ph">Без пріоритету</span>' }, ...m.priorities.map((p) => ({ id: p.id, label: p.name, html: prPill(p.id) }))], onPick: (v) => apply({ priority: v || null }) });
-  if (prop === 'assignee_id') return picker({ title: 'Відповідальний · адміни', extra: '<div class="pk-note">Призначити можна лише адмінів з повним доступом. Додати адміна: Ще → Доступи.</div>', anchor, search: m.members.length > 6, value: row.assignee_id || '', items: [{ id: '', label: 'Нікого', html: '<span class="ph">Нікого</span>' }, ...m.members.map((u) => ({ id: u.id, label: u.name, keys: (u.username || '').toLowerCase(), html: `${avatar(u.name, 'sm')} ${esc(u.name)}${u.id === state.me.user.id ? ' <small>(я)</small>' : ''}` }))], onPick: (v) => apply({ assignee_id: v || null }) });
+  if (prop === 'assignee_id') {
+    const label = (u) => `${avatar(u.name, 'sm')} ${esc(u.name)}${u.id === state.me.user.id ? ' <small>(я)</small>' : ''}${u.status === 'contact' ? ' <small title="Контакт — без доступу до бухгалтерії">📇 контакт</small>' : !u.in_bot ? ' <small>не в боті</small>' : ''}`;
+    return picker({
+      title: 'Відповідальний', anchor, search: true, value: row.assignee_id || '',
+      items: [{ id: '', label: 'Нікого', html: '<span class="ph">Нікого</span>' }, ...m.members.map((u) => ({ id: u.id, label: u.name, keys: `${(u.username || '').toLowerCase()} ${u.phone || ''}`, html: label(u) }))],
+      onPick: (v) => apply({ assignee_id: v || null }),
+      onCreate: (q) => safe(async () => {
+        const p = await api('/people', { method: 'POST', body: { name: q } });
+        await tkMeta(true);
+        toast(p.existed ? `${p.name} вже в команді` : `Додано: ${p.name}`);
+        apply({ assignee_id: p.id });
+      }),
+      createLabel: (q) => `＋ Додати «${esc(q)}» і призначити`,
+      extra: `<div class="pk-note">Немає в списку? Впиши <b>@нік</b> з Telegram, номер телефону або імʼя. З телефонної книги — надішли контакт боту (📎 → Контакт).</div>`,
+    });
+  }
   if (prop === 'project_id') return picker({ title: 'Проєкт', anchor, search: true, value: row.project_id || '', items: [{ id: '', label: 'Без проєкту', html: '<span class="ph">Без проєкту</span>' }, ...m.projects.map((p) => ({ id: p.id, label: p.name || `#${p.id}`, hint: p.section || '' }))], onPick: (v) => apply({ project_id: v || null }) });
   if (prop === 'tags') {
     const all = [...new Set([...(m.tags || []), ...(row.tags || [])])];
@@ -586,6 +601,7 @@ document.body.addEventListener('click', (e) => {
       try {
         const upd = await api('/pages/' + id, { method: 'PATCH', body: patch });
         Object.assign(row, upd);
+        if (upd.assignee_invite) showInvite(upd);
         if (!keep) renderTable($('tkBody'));
         else cell.innerHTML = tagPills(upd.tags) || '<span class="ph">—</span>';
       } catch (err) { toast(err.message); }
@@ -869,6 +885,7 @@ async function patchPage(patch) {
   await flushSave();
   try {
     const upd = await api('/pages/' + TK.page.id, { method: 'PATCH', body: patch });
+    if (upd.assignee_invite) showInvite(upd);
     const blocks = TK.page.blocks;
     TK.page = { ...upd, blocks };
     const scroll = document.getElementById('pgScroll')?.scrollTop;
@@ -1471,6 +1488,21 @@ document.addEventListener('click', async (e) => {
     });
   }
 });
+
+/** Відповідальний ще не в боті — даємо посилання, яке треба йому переслати. */
+function showInvite(p) {
+  const text = `Привіт! Тобі призначили задачу «${p.title || 'Без назви'}» у King Kong Lab. Відкрий, щоб бачити її та отримувати сповіщення: ${p.assignee_invite}`;
+  const box = picker({ title: `${p.assignee_name || 'Людина'} ще не в боті`, items: [], extra: `<div class="pk-inv"><p>Перешли посилання — людина побачить задачу і отримуватиме сповіщення. Доступу до бухгалтерії воно не дає.</p>
+    <div class="invite__link">${esc(p.assignee_invite)}</div>
+    <div class="btns"><button class="btn ghost" data-x="copy">Копіювати</button><button class="btn" data-x="share">Надіслати в Telegram</button></div></div>` });
+  box.querySelector('[data-x=copy]').onclick = () => safe(async () => { await navigator.clipboard.writeText(text); toast('Скопійовано'); closePicker(); });
+  box.querySelector('[data-x=share]').onclick = () => {
+    const url = `https://t.me/share/url?url=${encodeURIComponent(p.assignee_invite)}&text=${encodeURIComponent(`Тобі призначили задачу «${p.title || 'Без назви'}» у King Kong Lab`)}`;
+    const tg = tgWebApp();
+    if (tg?.openTelegramLink) tg.openTelegramLink(url); else window.open(url, '_blank');
+    closePicker();
+  };
+}
 
 function iconPicker(onPick, anchor) {
   const box = picker({ title: 'Іконка', anchor, items: [], extra: `<div class="emo">${EMOJIS.map((e) => `<button data-e="${e}">${e}</button>`).join('')}</div><button class="chip emo-rm" data-e="">Прибрати іконку</button>` });
