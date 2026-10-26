@@ -552,9 +552,9 @@ function propPicker(prop, row, anchor, apply) {
   if (prop === 'assignee_id') {
     return picker({
       title: 'Відповідальний', anchor, search: m.members.length > 6, value: row.assignee_id || '',
-      items: [{ id: '', label: 'Нікого', html: '<span class="ph">Нікого</span>' }, ...m.members.map((u) => ({ id: u.id, label: u.name, keys: (u.username || '').toLowerCase(), html: `${avatar(u.name, 'sm')} ${esc(u.name)}${u.username ? ` <small>@${esc(u.username)}</small>` : ''}${u.id === state.me.user.id ? ' <small>(я)</small>' : ''}` }))],
+      items: [{ id: '', label: 'Нікого', html: '<span class="ph">Нікого</span>' }, ...m.members.map((u) => ({ id: u.id, label: u.name, keys: (u.username || '').toLowerCase(), html: `${avatar(u.name, 'sm')} ${esc(u.name)}${u.username ? ` <small>@${esc(u.username)}</small>` : ''}${u.id === state.me.user.id ? ' <small>(я)</small>' : ''}${u.status !== 'active' ? ' <small title="Користується ботом, але доступ до бухгалтерії ще не підтверджено">⏳</small>' : ''}` }))],
       onPick: (v) => apply({ assignee_id: v || null }),
-      extra: '<div class="pk-note">Тут лише ті, хто є в боті. Нових людей запрошуй: Ще → Доступи.</div>',
+      extra: '<div class="pk-note">Тут усі, хто писав боту. ⏳ — доступ до бухгалтерії ще не підтверджено (задачу людина все одно отримає). Нових людей запрошуй: /invite.</div>',
     });
   }
   if (prop === 'project_id') return picker({ title: 'Проєкт', anchor, search: true, value: row.project_id || '', items: [{ id: '', label: 'Без проєкту', html: '<span class="ph">Без проєкту</span>' }, ...m.projects.map((p) => ({ id: p.id, label: p.name || `#${p.id}`, hint: p.section || '' }))], onPick: (v) => apply({ project_id: v || null }) });

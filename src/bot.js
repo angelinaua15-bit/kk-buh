@@ -1089,7 +1089,7 @@ export async function notifyTask(kind, page, actor, extra = {}) {
   targets.delete(actor?.id);
   for (const id of targets) {
     if (!id) continue;
-    const t = get("SELECT id, tg_id FROM users WHERE id = ? AND status = 'active' AND notify = 1", id);
+    const t = get("SELECT id, tg_id, status, role FROM users WHERE id = ? AND status != 'blocked' AND notify = 1", id);
     if (t?.tg_id) await bot.api.sendMessage(t.tg_id, `${head}\n\n${taskCard(page)}`, { parse_mode: 'HTML', reply_markup: taskKb(page, t) }).catch(() => {});
   }
 }

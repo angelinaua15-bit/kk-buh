@@ -68,7 +68,8 @@ export const BLOCK_TYPES = ['p', 'h1', 'h2', 'h3', 'todo', 'bullet', 'number', '
  * Контакт (status='contact') — людина, яку додали з Telegram / телефонної книги; доступу до бухгалтерії не має.
  */
 // відповідальні — лише ті, хто є в боті (має Telegram) і має підтверджений доступ
-const ASSIGNABLE_SQL = "tg_id IS NOT NULL AND status = 'active'";
+// усі, хто писав боту (є Telegram), навіть якщо доступ до бухгалтерії ще не підтверджено; крім заблокованих
+const ASSIGNABLE_SQL = "tg_id IS NOT NULL AND status != 'blocked'";
 export const assignable = () => all(`SELECT id, name, username, phone, role, status, tg_id IS NOT NULL AS has_tg,
     (tg_id IS NOT NULL AND status != 'contact') AS in_bot,
     (SELECT COUNT(*) FROM pages p WHERE p.assignee_id = users.id AND p.deleted_at IS NULL) AS tasks

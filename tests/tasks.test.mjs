@@ -129,7 +129,8 @@ try {
     const pend = db.prepare('SELECT id FROM users WHERE tg_id=5003').get().id;
     db.close();
     const m = (await ok('GET', '/pages/meta')).members;
-    assert.ok(!m.some((u) => u.id === noTg || u.id === pend));
+    assert.ok(!m.some((u) => u.id === noTg));
+    assert.ok(m.some((u) => u.id === pend)); // писав боту, але доступ ще не підтверджено
     assert.ok(m.every((u) => u.has_tg));
     assert.equal((await call('POST', '/pages', { title: 'x', assignee_id: noTg })).status, 400);
     assert.equal((await call('POST', '/people', { name: '@x' })).status, 404);
