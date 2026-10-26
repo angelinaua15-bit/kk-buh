@@ -42,7 +42,7 @@ import {
 } from './services/extras.js';
 import { dailyRates, makeBackup, monoEnabled, syncMono } from './services/integrations.js';
 import {
-  createPage, dueDigest, getPage, myOpenTasks, pageAppUrl, parseTaskText, priorityName, statusName, taskLine, updatePage,
+  canBeAssignee, createPage, dueDigest, getPage, myOpenTasks, pageAppUrl, parseTaskText, priorityName, statusName, taskLine, updatePage,
 } from './services/tasks.js';
 import { METHODS, SECTIONS, calcDeal, dealBalances, getDeal, listDeals, monthlySummary, normalizeDeal, parseDate, parseMoney, saveDeal } from './services/deals.js';
 
@@ -281,14 +281,14 @@ if (bot) {
     try {
       if (act === 'view') {
         await ctx.answerCallbackQuery();
-        return ctx.reply(taskCard(getPage(id)), { parse_mode: 'HTML', reply_markup: taskKb(getPage(id)) });
+        return ctx.reply(taskCard(getPage(id)), { parse_mode: 'HTML', reply_markup: taskKb(getPage(id), u) });
       }
       if (u.role === 'viewer') return ctx.answerCallbackQuery({ text: 'Лише перегляд' });
       const patch = act === 'tmr' ? { due: addDay(today(), 1) } : act === 'me' ? { assignee_id: u.id } : { status: act };
       const { page, before } = updatePage(id, patch, u);
       if (act === 'done' && before.created_by && before.created_by !== u.id) notifyTask('done', page, u, { to: before.created_by });
       await ctx.answerCallbackQuery({ text: act === 'done' ? '✅ Готово' : act === 'tmr' ? '📅 Перенесено на завтра' : act === 'me' ? 'Тепер це твоя задача' : statusName(page.status) });
-      await ctx.editMessageText(taskCard(page), { parse_mode: 'HTML', reply_markup: taskKb(page) }).catch(() => {});
+      await ctx.editMessageText(taskCard(page), { parse_mode: 'HTML', reply_markup: taskKb(page, u) }).catch(() => {});
     } catch (e) {
       await ctx.answerCallbackQuery({ text: e.message || 'Помилка' });
     }
@@ -956,14 +956,14 @@ function taskCard(p) {
   if (p.checklist) lines.push(`Чекліст: ${p.checklist.done}/${p.checklist.total}`);
   return lines.join('\n');
 }
-function taskKb(p) {
+function taskKb(p, viewer = null) {
   const kb = new InlineKeyboard();
   if (p.status !== 'done') {
     kb.text('✅ Готово', `tk:done:${p.id}`);
     if (p.status !== 'doing') kb.text('▶️ В роботу', `tk:doing:${p.id}`);
     else kb.text('👀 На перевірку', `tk:review:${p.id}`);
     kb.row().text('📅 На завтра', `tk:tmr:${p.id}`);
-    if (!p.assignee_id) kb.text('🙋 Беру', `tk:me:${p.id}`);
+    if (!p.assignee_id && canBeAssignee(viewer?.id)) kb.text('🙋 Беру', `tk:me:${p.id}`);
   } else {
     kb.text('↩️ Повернути в роботу', `tk:doing:${p.id}`);
   }
@@ -974,9 +974,9 @@ function taskKb(p) {
 async function quickTask(ctx, u, text) {
   const parsed = parseTaskText(text, today());
   if (!parsed.title) return ctx.reply('Порожня задача 🤔 Напиши, що треба зробити.');
-  const page = createPage({ kind: 'task', status: 'todo', ...parsed, assignee_id: parsed.assignee_id || u.id }, u);
-  if (page.assignee_id !== u.id) notifyTask('assigned', page, u);
-  return ctx.reply(`Додано ✨\n\n${taskCard(page)}`, { parse_mode: 'HTML', reply_markup: taskKb(page) });
+  const page = createPage({ kind: 'task', status: 'todo', ...parsed, assignee_id: parsed.assignee_id || (canBeAssignee(u.id) ? u.id : null) }, u);
+  if (page.assignee_id && page.assignee_id !== u.id) notifyTask('assigned', page, u);
+  return ctx.reply(`Додано ✨\n\n${taskCard(page)}`, { parse_mode: 'HTML', reply_markup: taskKb(page, u) });
 }
 async function sendMyTasks(ctx, u) {
   const rows = myOpenTasks(u.id, 12);
@@ -1002,8 +1002,8 @@ export async function notifyTask(kind, page, actor, extra = {}) {
   targets.delete(actor?.id);
   for (const id of targets) {
     if (!id) continue;
-    const t = get("SELECT tg_id FROM users WHERE id = ? AND status = 'active' AND notify = 1", id);
-    if (t?.tg_id) await bot.api.sendMessage(t.tg_id, `${head}\n\n${taskCard(page)}`, { parse_mode: 'HTML', reply_markup: taskKb(page) }).catch(() => {});
+    const t = get("SELECT id, tg_id FROM users WHERE id = ? AND status = 'active' AND notify = 1", id);
+    if (t?.tg_id) await bot.api.sendMessage(t.tg_id, `${head}\n\n${taskCard(page)}`, { parse_mode: 'HTML', reply_markup: taskKb(page, t) }).catch(() => {});
   }
 }
 

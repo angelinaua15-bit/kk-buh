@@ -51,6 +51,7 @@ const BLOCK_MENU = [
 const PH = { p: 'Пиши або натисни «/» для команд', h1: 'Заголовок 1', h2: 'Заголовок 2', h3: 'Заголовок 3', todo: 'Пункт', bullet: 'Пункт списку', number: 'Пункт списку', quote: 'Цитата', callout: 'Виноска', code: 'код', toggle: 'Розгортання' };
 const isListType = (t) => t === 'todo' || t === 'bullet' || t === 'number';
 const canWritePages = () => state.me?.user?.role !== 'viewer';
+const iCanBeAssignee = () => Boolean(TK.meta?.members.some((m) => m.id === state.me?.user?.id));
 const uid = () => 'c' + Math.random().toString(36).slice(2, 10);
 const ddmm = (iso) => (iso ? `${iso.slice(8, 10)}.${iso.slice(5, 7)}` : '');
 function addDaysIso(iso, n) {
@@ -204,7 +205,7 @@ function quickAdd(btn) {
     ta.disabled = true;
     try {
       const body = { kind: 'task', status, title };
-      if (state.tk.who === 'me') body.assignee_id = state.me.user.id;
+      if (state.tk.who === 'me' && iCanBeAssignee()) body.assignee_id = state.me.user.id;
       if (state.tk.project) body.project_id = Number(state.tk.project);
       const smart = parseQuick(title);
       Object.assign(body, smart);
@@ -408,7 +409,7 @@ function renderTable(box) {
     if (e.key !== 'Enter' || !inp.value.trim()) return;
     safe(async () => {
       const body = { kind: 'task', status: 'todo', ...parseQuick(inp.value.trim()) };
-      if (state.tk.who === 'me') body.assignee_id ??= state.me.user.id;
+      if (state.tk.who === 'me' && iCanBeAssignee()) body.assignee_id ??= state.me.user.id;
       if (state.tk.project) body.project_id = Number(state.tk.project);
       await api('/pages', { method: 'POST', body });
       await tkBody();
@@ -548,7 +549,7 @@ function propPicker(prop, row, anchor, apply) {
   const m = TK.meta;
   if (prop === 'status') return picker({ title: 'Статус', anchor, value: row.status, items: m.statuses.map((s) => ({ id: s.id, label: s.name, html: stPill(s.id) })), onPick: (v) => apply({ status: v }) });
   if (prop === 'priority') return picker({ title: 'Пріоритет', anchor, value: row.priority || '', items: [{ id: '', label: 'Без пріоритету', html: '<span class="ph">Без пріоритету</span>' }, ...m.priorities.map((p) => ({ id: p.id, label: p.name, html: prPill(p.id) }))], onPick: (v) => apply({ priority: v || null }) });
-  if (prop === 'assignee_id') return picker({ title: 'Відповідальний', anchor, search: m.members.length > 6, value: row.assignee_id || '', items: [{ id: '', label: 'Нікого', html: '<span class="ph">Нікого</span>' }, ...m.members.map((u) => ({ id: u.id, label: u.name, keys: (u.username || '').toLowerCase(), html: `${avatar(u.name, 'sm')} ${esc(u.name)}${u.id === state.me.user.id ? ' <small>(я)</small>' : ''}` }))], onPick: (v) => apply({ assignee_id: v || null }) });
+  if (prop === 'assignee_id') return picker({ title: 'Відповідальний · адміни', extra: '<div class="pk-note">Призначити можна лише адмінів з повним доступом. Додати адміна: Ще → Доступи.</div>', anchor, search: m.members.length > 6, value: row.assignee_id || '', items: [{ id: '', label: 'Нікого', html: '<span class="ph">Нікого</span>' }, ...m.members.map((u) => ({ id: u.id, label: u.name, keys: (u.username || '').toLowerCase(), html: `${avatar(u.name, 'sm')} ${esc(u.name)}${u.id === state.me.user.id ? ' <small>(я)</small>' : ''}` }))], onPick: (v) => apply({ assignee_id: v || null }) });
   if (prop === 'project_id') return picker({ title: 'Проєкт', anchor, search: true, value: row.project_id || '', items: [{ id: '', label: 'Без проєкту', html: '<span class="ph">Без проєкту</span>' }, ...m.projects.map((p) => ({ id: p.id, label: p.name || `#${p.id}`, hint: p.section || '' }))], onPick: (v) => apply({ project_id: v || null }) });
   if (prop === 'tags') {
     const all = [...new Set([...(m.tags || []), ...(row.tags || [])])];
@@ -636,7 +637,7 @@ async function newPageFlow(body = {}) {
     const b = { ...body };
     if (b.kind !== 'page') {
       b.status ||= 'todo';
-      if (state.tk.who === 'me' && !b.assignee_id) b.assignee_id = state.me.user.id;
+      if (state.tk.who === 'me' && !b.assignee_id && iCanBeAssignee()) b.assignee_id = state.me.user.id;
       if (state.tk.project && !b.project_id) b.project_id = Number(state.tk.project);
     }
     const p = await api('/pages', { method: 'POST', body: b });

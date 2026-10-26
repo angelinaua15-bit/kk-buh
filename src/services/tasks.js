@@ -60,6 +60,11 @@ export const PRIORITIES = [
 const STATUS_IDS = STATUSES.map((s) => s.id);
 const PRIORITY_IDS = PRIORITIES.map((p) => p.id);
 export const BLOCK_TYPES = ['p', 'h1', 'h2', 'h3', 'todo', 'bullet', 'number', 'quote', 'callout', 'divider', 'code', 'toggle', 'page'];
+/** Відповідальним можна призначити лише адмінів (повний доступ). */
+export const ASSIGNABLE_ROLES = ['admin'];
+const ASSIGNABLE_SQL = `status = 'active' AND role IN (${ASSIGNABLE_ROLES.map((r) => `'${r}'`).join(',')})`;
+export const assignable = () => all(`SELECT id, name, username, role FROM users WHERE ${ASSIGNABLE_SQL} ORDER BY name`);
+export const canBeAssignee = (id) => Boolean(id && get(`SELECT id FROM users WHERE id = ? AND ${ASSIGNABLE_SQL}`, Number(id)));
 export const COVERS = ['violet', 'blue', 'pink', 'green', 'amber', 'night', 'sunset'];
 
 const bad = (m) => new HttpError(400, m);
@@ -228,7 +233,7 @@ function normalize(body, existing) {
         if (v && !PRIORITY_IDS.includes(v)) throw bad('Невідомий пріоритет');
         out.priority = v || null; break;
       case 'assignee_id':
-        if (v && !get("SELECT id FROM users WHERE id = ? AND status != 'blocked'", Number(v))) throw bad('Такої людини немає в команді');
+        if (v && !canBeAssignee(v) && Number(v) !== existing?.assignee_id) throw bad('Відповідальним можна призначити лише адміна з повним доступом');
         out.assignee_id = v ? Number(v) : null; break;
       case 'project_id':
         if (v && !get('SELECT id FROM projects WHERE id = ?', Number(v))) throw bad('Проєкт не знайдено');
@@ -408,7 +413,7 @@ export function parseTaskText(text, now = today()) {
   t = t.replace(/\s#([\p{L}\d_-]{1,30})/gu, (_m, tag) => { out.tags.push(tag); return ' '; });
   t = t.replace(/\s(!{1,3})(?=\s)/g, (_m, ex) => { out.priority = ex.length >= 2 ? 'urgent' : 'high'; return ' '; });
   t = t.replace(/\s@([\w\d_]{2,32})/g, (m, uname) => {
-    const u = get("SELECT id FROM users WHERE status = 'active' AND (lower(username) = lower(?) OR lower(name) = lower(?) OR lower(name) LIKE lower(?))", uname, uname, `${uname} %`);
+    const u = get(`SELECT id FROM users WHERE ${ASSIGNABLE_SQL} AND (lower(username) = lower(?) OR lower(name) = lower(?) OR lower(name) LIKE lower(?))`, uname, uname, `${uname} %`);
     if (u) { out.assignee_id = u.id; return ' '; }
     return m;
   });

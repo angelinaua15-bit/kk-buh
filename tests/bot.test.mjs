@@ -287,7 +287,11 @@ await test('HTML in names is escaped', async () => {
 
 
 await test('/task → task with assignee, due, priority, tags; buttons work', async () => {
-  run("INSERT OR IGNORE INTO users(tg_id, name, username, role, status) VALUES(9777, 'Олена Дизайн', 'olena_d', 'member', 'active')");
+  run("INSERT OR IGNORE INTO users(tg_id, name, username, role, status) VALUES(9777, 'Олена Дизайн', 'olena_d', 'admin', 'active')");
+  run("INSERT OR IGNORE INTO users(tg_id, name, username, role, status) VALUES(9778, 'Ігор Команда', 'igor_m', 'member', 'active')");
+  // не адміна відповідальним не призначаємо — @нік лишається в назві
+  await text(111, '/task Перевірити рекламу @igor_m');
+  assert.equal(get("SELECT assignee_id FROM pages WHERE title LIKE 'Перевірити рекламу%'").assignee_id, get('SELECT id FROM users WHERE tg_id=111').id);
   await text(111, '/task Банер для ABV @olena_d завтра !! #дизайн');
   const r = lastReply();
   assert.match(r.payload.text, /Банер для ABV/);

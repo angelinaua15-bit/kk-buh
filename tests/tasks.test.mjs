@@ -101,7 +101,7 @@ try {
     assert.ok(s.pages.length >= 2);
     await ok('DELETE', `/comments/${c.id}`);
   });
-  await test('viewer can read but not write; member can write', async () => {
+  await test('viewer read-only; member writes; only admins can be assignees', async () => {
     // заводимо людей через API доступів
     const { DatabaseSync } = await import('node:sqlite');
     const db = new DatabaseSync(env.DB_PATH);
@@ -110,10 +110,16 @@ try {
     assert.ok((await ok('GET', '/pages?kind=task', null, 5001)).length >= 1);
     assert.equal((await call('POST', '/pages', { title: 'x' }, 5001)).status, 403);
     assert.equal((await call('PATCH', `/pages/${task.id}`, { status: 'doing' }, 5001)).status, 403);
-    const m = await ok('POST', '/pages', { title: 'Моя задача', assignee_id: null }, 5002);
-    const mine = await ok('PATCH', `/pages/${m.id}`, { assignee_id: (await ok('GET', '/me', null, 5002)).user.id }, 5002);
-    assert.equal(mine.assignee_name, 'Олег');
-    assert.ok((await ok('GET', '/pages?kind=task&assignee=me', null, 5002)).some((x) => x.id === m.id));
+    const m = await ok('POST', '/pages', { title: 'Задача від команди', assignee_id: null }, 5002);
+    const memberId = (await ok('GET', '/me', null, 5002)).user.id;
+    const adminId = (await ok('GET', '/me')).user.id;
+    assert.equal((await call('PATCH', `/pages/${m.id}`, { assignee_id: memberId }, 5002)).status, 400);
+    const meta2 = await ok('GET', '/pages/meta');
+    assert.ok(meta2.members.every((u) => u.role === 'admin'));
+    assert.ok(!meta2.members.some((u) => u.id === memberId));
+    const assigned = await ok('PATCH', `/pages/${m.id}`, { assignee_id: adminId }, 5002);
+    assert.equal(assigned.assignee_name, 'Ангеліна');
+    assert.ok((await ok('GET', '/pages?kind=task&assignee=me')).some((x) => x.id === m.id));
   });
   await test('deleted (cancelled) project: task stays, project hidden from pickers', async () => {
     const deal = await ok('POST', '/deals', { section: 'Розробки', task: 'Лендинг', price: { amount: 10000, currency: 'USD' } });

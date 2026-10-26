@@ -302,3 +302,4 @@ body.pg-open { overflow: hidden; }
   .pp-k { font-size: 13px; gap: 6px; }
   .blk { margin-left: calc(var(--ind, 0) * 20px); }
 }
+.pk-note { font-size: 12px; color: var(--muted); padding: 8px 10px 2px; border-top: 1px solid var(--line); margin-top: 4px; }

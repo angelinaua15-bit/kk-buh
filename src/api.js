@@ -18,7 +18,7 @@ import { createDocument, listDocuments, renderDocument, requisites, saveRequisit
 import { linkMonoAccount, makeBackup, monoAccounts, monoEnabled, setMonoWebhook, syncMono } from './services/integrations.js';
 import { aiEnabled } from './services/ai.js';
 import {
-  COVERS, PAGE_TEMPLATES, PRIORITIES, STATUSES, addComment, createPage, deleteComment, duplicatePage, getPage, listPages,
+  COVERS, PAGE_TEMPLATES, assignable, PRIORITIES, STATUSES, addComment, createPage, deleteComment, duplicatePage, getPage, listPages,
   purgePage, restorePage, tagList, trashPage, updatePage,
 } from './services/tasks.js';
 import { METHODS, SECTIONS, dealBalances, deleteDeal, getDeal, importSnapshot, listDeals, monthlySummary, saveDeal } from './services/deals.js';
@@ -538,7 +538,6 @@ api.get('/search', (req, res) => {
 
 /* ───────── Задачі та сторінки (як у Notion) ───────── */
 const writePages = guard((u) => u.role !== 'viewer', 'У режимі перегляду не можна змінювати задачі');
-const SEEN_ROLES = new Set(['admin', 'finance', 'member', 'viewer']);
 function pageQuery(req) {
   const q = { ...req.query };
   if (q.assignee === 'me') q.assignee_id = req.user.id;
@@ -557,7 +556,7 @@ function notifyPage(kind, page, actor, extra = {}) {
 
 api.get('/pages/meta', (req, res) => res.json({
   statuses: STATUSES, priorities: PRIORITIES, covers: COVERS, tags: tagList(), templates: Object.keys(PAGE_TEMPLATES),
-  members: all("SELECT id, name, username, role FROM users WHERE status = 'active' ORDER BY name").filter((u) => SEEN_ROLES.has(u.role)),
+  members: assignable(),
   projects: all("SELECT id, name, status, section FROM projects WHERE status != 'cancelled' ORDER BY closed, id DESC LIMIT 300"),
 }));
 api.get('/pages', (req, res) => res.json(listPages(pageQuery(req))));
