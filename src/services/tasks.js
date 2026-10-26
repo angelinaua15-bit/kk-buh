@@ -67,7 +67,8 @@ export const BLOCK_TYPES = ['p', 'h1', 'h2', 'h3', 'todo', 'bullet', 'number', '
  * Відповідальним можна призначити будь-кого з команди або контактів (крім заблокованих).
  * Контакт (status='contact') — людина, яку додали з Telegram / телефонної книги; доступу до бухгалтерії не має.
  */
-const ASSIGNABLE_SQL = "status IN ('active','pending','contact')";
+// відповідальні — лише ті, хто є в боті (має Telegram) і має підтверджений доступ
+const ASSIGNABLE_SQL = "tg_id IS NOT NULL AND status = 'active'";
 export const assignable = () => all(`SELECT id, name, username, phone, role, status, tg_id IS NOT NULL AS has_tg,
     (tg_id IS NOT NULL AND status != 'contact') AS in_bot,
     (SELECT COUNT(*) FROM pages p WHERE p.assignee_id = users.id AND p.deleted_at IS NULL) AS tasks
@@ -448,9 +449,8 @@ export function parseTaskText(text, now = today()) {
   t = t.replace(/\s(!{1,3})(?=\s)/g, (_m, ex) => { out.priority = ex.length >= 2 ? 'urgent' : 'high'; return ' '; });
   t = t.replace(/\s@([\w\d_]{2,32})/g, (m, uname) => {
     const u = get(`SELECT id FROM users WHERE ${ASSIGNABLE_SQL} AND (lower(username) = lower(?) OR lower(name) = lower(?) OR lower(name) LIKE lower(?))`, uname, uname, `${uname} %`);
-    // незнайомий @нік — додаємо в контакти, щоб одразу призначити
-    out.assignee_id = (u || addPerson({ username: uname })).id;
-    return ' ';
+    if (u) { out.assignee_id = u.id; return ' '; }
+    return m;
   });
   const dateRe = /\s(?:до\s+|на\s+|в\s+|у\s+)?(сьогодні|завтра|післязавтра|(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?|пн|вт|ср|чт|пт|сб|нд|понеділок|вівторок|середу|середа|четвер|п['ʼ]ятницю|п['ʼ]ятниця|суботу|субота|неділю|неділя)(?=[\s,.!?]|$)/iu;
   const m = t.match(dateRe);

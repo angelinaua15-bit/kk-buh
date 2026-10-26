@@ -18,7 +18,7 @@ import { createDocument, listDocuments, renderDocument, requisites, saveRequisit
 import { linkMonoAccount, makeBackup, monoAccounts, monoEnabled, setMonoWebhook, syncMono } from './services/integrations.js';
 import { aiEnabled } from './services/ai.js';
 import {
-  COVERS, PAGE_TEMPLATES, addPerson, assignable, taskInviteLink, PRIORITIES, STATUSES, addComment, createPage, deleteComment, duplicatePage, getPage, listPages,
+  COVERS, PAGE_TEMPLATES, assignable, taskInviteLink, PRIORITIES, STATUSES, addComment, createPage, deleteComment, duplicatePage, getPage, listPages,
   purgePage, restorePage, tagList, trashPage, updatePage,
 } from './services/tasks.js';
 import { METHODS, SECTIONS, dealBalances, deleteDeal, getDeal, importSnapshot, listDeals, monthlySummary, saveDeal } from './services/deals.js';
@@ -566,11 +566,6 @@ api.get('/pages/meta', (req, res) => res.json({
   members: assignable(),
   projects: all("SELECT id, name, status, section FROM projects WHERE status != 'cancelled' ORDER BY closed, id DESC LIMIT 300"),
 }));
-/** Додати людину в контакти (щоб призначати на задачі): імʼя, @нік або телефон. */
-api.post('/people', writePages, (req, res) => {
-  const p = addPerson(req.body || {}, req.user);
-  res.status(p.existed ? 200 : 201).json({ id: p.id, name: p.name, username: p.username, phone: p.phone, status: p.status, has_tg: Boolean(p.tg_id), existed: Boolean(p.existed) });
-});
 api.get('/pages', (req, res) => res.json(listPages(pageQuery(req))));
 api.get('/pages/:id', (req, res) => res.json(getPage(needId(req))));
 api.post('/pages', writePages, (req, res) => {

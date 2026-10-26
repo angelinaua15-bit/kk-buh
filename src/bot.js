@@ -42,7 +42,7 @@ import {
 } from './services/extras.js';
 import { dailyRates, makeBackup, monoEnabled, syncMono } from './services/integrations.js';
 import {
-  addPerson, assignable, canBeAssignee, claimTaskLink, createPage, taskInviteLink, dueDigest, getPage, myOpenTasks, pageAppUrl, parseTaskText, priorityName, statusName, taskLine, updatePage,
+  assignable, canBeAssignee, claimTaskLink, createPage, taskInviteLink, dueDigest, getPage, myOpenTasks, pageAppUrl, parseTaskText, priorityName, statusName, taskLine, updatePage,
 } from './services/tasks.js';
 import { METHODS, SECTIONS, calcDeal, dealBalances, getDeal, listDeals, monthlySummary, normalizeDeal, parseDate, parseMoney, saveDeal } from './services/deals.js';
 
@@ -459,10 +459,10 @@ if (bot) {
     if (assignWait.has(u.id) && !textMap[t]) {
       const pageId = assignWait.get(u.id);
       assignWait.delete(u.id);
-      try {
-        const person = addPerson({ name: t }, u);
-        return assignTo(ctx, u, pageId, person.id);
-      } catch (e) { return ctx.reply(`⚠️ ${e.message}`); }
+      const q = t.trim().replace(/^@/, '').toLowerCase();
+      const person = assignable().find((p) => (p.username || '').toLowerCase() === q || p.name.toLowerCase() === q || p.name.toLowerCase().startsWith(`${q} `));
+      if (!person) return ctx.reply('Такої людини немає в боті 🤔 Обери зі списку. Новим людям надішли запрошення: /invite');
+      try { return await assignTo(ctx, u, pageId, person.id); } catch (e) { return ctx.reply(`⚠️ ${e.message}`); }
     }
     if (textMap[t]) assignWait.delete(u.id);
     if (textMap[t] === 'newtask') {
@@ -524,20 +524,16 @@ if (bot) {
     return next();
   });
 
-  // поділилися контактом (з Telegram чи телефонної книги) — додаємо людину, щоб призначати на задачі
+  // поділилися контактом — якщо ця людина є в боті, призначаємо її
   bot.on('message:contact', async (ctx) => {
     const u = ctx.kk;
     if (!needActive(ctx, u)) return;
-    if (u.role === 'viewer') return ctx.reply('У режимі перегляду не можна додавати людей.');
     const c = ctx.message.contact;
-    try {
-      const person = addPerson({ name: [c.first_name, c.last_name].filter(Boolean).join(' '), phone: c.phone_number, tg_id: c.user_id }, u);
-      const pageId = assignWait.get(u.id);
-      if (pageId) { assignWait.delete(u.id); return assignTo(ctx, u, pageId, person.id); }
-      return ctx.reply(`📇 ${person.existed ? 'Вже є в команді' : 'Додано в контакти'}: <b>${esc(person.name)}</b>${person.phone ? ` · ${esc(person.phone)}` : ''}\n\nТепер цю людину можна призначати відповідальною: у Mini App або <code>/task … @${esc(person.username || person.name.split(' ')[0])}</code>.${person.status === 'contact' ? '\nДоступу до бухгалтерії в неї немає — лише задачі.' : ''}`, { parse_mode: 'HTML' });
-    } catch (e) {
-      return ctx.reply(`⚠️ ${e.message}`);
-    }
+    const person = c.user_id ? assignable().find((p) => get('SELECT tg_id FROM users WHERE id = ?', p.id)?.tg_id === c.user_id) : null;
+    const pageId = assignWait.get(u.id);
+    if (!person) return ctx.reply('Цієї людини ще немає в боті. Надішли їй запрошення: /invite — після підтвердження її можна буде призначати.');
+    if (pageId) { assignWait.delete(u.id); return assignTo(ctx, u, pageId, person.id); }
+    return ctx.reply(`👤 ${esc(person.name)} є в боті — її можна призначати відповідальною.`, { parse_mode: 'HTML' });
   });
 
   bot.on('message:voice', async (ctx) => {
@@ -1003,12 +999,12 @@ async function askAssignee(ctx, u, pageId) {
   const people = assignable().slice(0, 12);
   const kb = new InlineKeyboard();
   people.forEach((p, i) => {
-    kb.text(`${p.id === page.assignee_id ? '● ' : ''}${p.id === u.id ? '🙋 Я' : p.name}${p.status === 'contact' ? ' 📇' : ''}`.slice(0, 30), `tk:set:${pageId}:${p.id}`);
+    kb.text(`${p.id === page.assignee_id ? '● ' : ''}${p.id === u.id ? '🙋 Я' : p.name}`.slice(0, 30), `tk:set:${pageId}:${p.id}`);
     if (i % 2 === 1) kb.row();
   });
   return ctx.reply(
     `👤 Кого призначити на «${esc(page.title || 'Без назви')}»?\n\n`
-    + 'Обери зі списку, або:\n• напиши <b>@нік</b> у Telegram чи імʼя,\n• або надішли контакт: 📎 → <b>Контакт</b> (можна з телефонної книги).',
+    + 'Обери зі списку або напиши @нік / імʼя. Тут лише ті, хто є в боті.',
     { parse_mode: 'HTML', reply_markup: kb },
   );
 }

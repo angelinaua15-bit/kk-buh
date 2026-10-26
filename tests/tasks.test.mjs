@@ -120,30 +120,19 @@ try {
     assert.equal(assigned.assignee_name, 'Ангеліна');
     assert.ok((await ok('GET', '/pages?kind=task&assignee=me')).some((x) => x.id === m.id));
   });
-  await test('add people by @nick / phone / name; assign; invite link for people not in bot', async () => {
-    const a = await ok('POST', '/people', { name: '@Olena_Design' });
-    assert.equal(a.username, 'Olena_Design');
-    assert.equal(a.status, 'contact');
-    const again = await ok('POST', '/people', { name: 'https://t.me/olena_design' });
-    assert.equal(again.id, a.id);
-    assert.ok(again.existed);
-    const ph = await ok('POST', '/people', { name: '097 123 45 67' });
-    assert.equal(ph.phone, '+380971234567');
-    const nm = await ok('POST', '/people', { name: 'Майстер Василь' });
-    assert.equal(nm.name, 'Майстер Василь');
-    assert.equal((await call('POST', '/people', { name: '' })).status, 400);
-    assert.equal((await call('POST', '/people', { name: 'x' }, 5001)).status, 403);
-    const meta3 = await ok('GET', '/pages/meta');
-    assert.ok([a.id, ph.id, nm.id].every((id) => meta3.members.some((u) => u.id === id)));
-    const t = await ok('POST', '/pages', { title: 'Банер', assignee_id: a.id });
-    assert.match(t.assignee_invite, /start=task_\d+_[a-f0-9]{10}$/);
-    const t2 = await ok('PATCH', `/pages/${t.id}`, { assignee_id: nm.id });
-    assert.ok(t2.assignee_invite);
-    const self = await ok('PATCH', `/pages/${t.id}`, { assignee_id: (await ok('GET', '/me')).user.id });
-    assert.equal(self.assignee_invite, undefined);
-    // контакт не має доступу до бухгалтерії
-    const users = await ok('GET', '/users');
-    assert.equal(users.find((u) => u.id === nm.id).status, 'contact');
+  await test('assignees: only people in the bot (Telegram + active)', async () => {
+    const { DatabaseSync } = await import('node:sqlite');
+    const db = new DatabaseSync(env.DB_PATH);
+    db.exec("INSERT INTO users(name, username, role, status) VALUES('@no_tg', 'no_tg', 'member', 'active')");
+    db.exec("INSERT INTO users(tg_id, name, role, status) VALUES(5003, 'Чекає', 'member', 'pending')");
+    const noTg = db.prepare("SELECT id FROM users WHERE username='no_tg'").get().id;
+    const pend = db.prepare('SELECT id FROM users WHERE tg_id=5003').get().id;
+    db.close();
+    const m = (await ok('GET', '/pages/meta')).members;
+    assert.ok(!m.some((u) => u.id === noTg || u.id === pend));
+    assert.ok(m.every((u) => u.has_tg));
+    assert.equal((await call('POST', '/pages', { title: 'x', assignee_id: noTg })).status, 400);
+    assert.equal((await call('POST', '/people', { name: '@x' })).status, 404);
   });
   await test('deleted (cancelled) project: task stays, project hidden from pickers', async () => {
     const deal = await ok('POST', '/deals', { section: 'Розробки', task: 'Лендинг', price: { amount: 10000, currency: 'USD' } });
