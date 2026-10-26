@@ -41,6 +41,9 @@ import {
   checkLimit, compare, debts, forecast, listTemplates, memberCabinet, payouts, reminderText, taxes, useTemplate, weeklyReport,
 } from './services/extras.js';
 import { dailyRates, makeBackup, monoEnabled, syncMono } from './services/integrations.js';
+import {
+  createPage, dueDigest, getPage, myOpenTasks, pageAppUrl, parseTaskText, priorityName, statusName, taskLine, updatePage,
+} from './services/tasks.js';
 import { METHODS, SECTIONS, calcDeal, dealBalances, getDeal, listDeals, monthlySummary, normalizeDeal, parseDate, parseMoney, saveDeal } from './services/deals.js';
 
 export const bot = config.botToken
@@ -53,6 +56,7 @@ export const webAppKb = (user) => {
   const url = appUrl(user?.tg_id);
   if (url) kb.webApp('🦍 Бухгалтерія KK', url).row();
   kb.text('➕ Дохід').text('➖ Витрата').row();
+  if (user?.role !== 'viewer') kb.text('📝 Задача').text('✅ Мої задачі').row();
   if (user && can.seeAll(user)) {
     kb.text('➕ Новий проєкт').text('📋 Проєкти').row();
     kb.text('💼 Баланс').text('📊 Місяць').row().text('📌 Борги').text('📅 План').row().text('⚡ Шаблони').text('👥 Команда');
@@ -253,8 +257,42 @@ if (bot) {
     '👤 Мій кабінет': 'cabinet',
     '➕ Новий проєкт': 'newdeal',
     '📋 Проєкти': 'deals',
+    '📝 Задача': 'newtask',
+    '✅ Мої задачі': 'mytasks',
   };
 
+  bot.command(['task', 't'], (ctx) => {
+    const u = ctx.kk;
+    if (!needActive(ctx, u)) return;
+    if (u.role === 'viewer') return ctx.reply('У режимі перегляду не можна створювати задачі.');
+    const text = String(ctx.match || '').trim();
+    if (!text) {
+      pendingTask.set(u.id, true);
+      return ctx.reply('📝 Яку задачу додати? Напиши одним повідомленням.\nНаприклад: <code>Правки на сайт Sensora @olena пт !</code>', { parse_mode: 'HTML' });
+    }
+    return quickTask(ctx, u, text);
+  });
+  bot.command(['tasks', 'mytasks'], (ctx) => needActive(ctx, ctx.kk) && sendMyTasks(ctx, ctx.kk));
+  bot.callbackQuery(/^tk:(done|doing|review|todo|tmr|me|view):(\d+)$/, async (ctx) => {
+    const u = ctx.kk;
+    if (!u || u.status !== 'active') return ctx.answerCallbackQuery({ text: 'Немає доступу' });
+    const [, act, idStr] = ctx.match;
+    const id = Number(idStr);
+    try {
+      if (act === 'view') {
+        await ctx.answerCallbackQuery();
+        return ctx.reply(taskCard(getPage(id)), { parse_mode: 'HTML', reply_markup: taskKb(getPage(id)) });
+      }
+      if (u.role === 'viewer') return ctx.answerCallbackQuery({ text: 'Лише перегляд' });
+      const patch = act === 'tmr' ? { due: addDay(today(), 1) } : act === 'me' ? { assignee_id: u.id } : { status: act };
+      const { page, before } = updatePage(id, patch, u);
+      if (act === 'done' && before.created_by && before.created_by !== u.id) notifyTask('done', page, u, { to: before.created_by });
+      await ctx.answerCallbackQuery({ text: act === 'done' ? '✅ Готово' : act === 'tmr' ? '📅 Перенесено на завтра' : act === 'me' ? 'Тепер це твоя задача' : statusName(page.status) });
+      await ctx.editMessageText(taskCard(page), { parse_mode: 'HTML', reply_markup: taskKb(page) }).catch(() => {});
+    } catch (e) {
+      await ctx.answerCallbackQuery({ text: e.message || 'Помилка' });
+    }
+  });
   bot.command('deal', (ctx) => needActive(ctx, ctx.kk) && startDealWizard(ctx));
   bot.command('deals', (ctx) => needActive(ctx, ctx.kk) && sendDeals(ctx));
   bot.command('summary', async (ctx) => {
@@ -390,6 +428,17 @@ if (bot) {
     const u = ctx.kk;
     if (!needActive(ctx, u)) return;
 
+    if (textMap[t] === 'newtask') {
+      if (u.role === 'viewer') return ctx.reply('У режимі перегляду не можна створювати задачі.');
+      pendingTask.set(u.id, true);
+      return ctx.reply('📝 Напиши задачу одним повідомленням, наприклад:\n<code>Зробити банер для ABV @olena завтра !! #дизайн</code>\n\n@нік — відповідальний, завтра / пт / 30.10 — дедлайн, ! чи !! — пріоритет, #тег — тег.', { parse_mode: 'HTML' });
+    }
+    if (textMap[t] === 'mytasks') return sendMyTasks(ctx, u);
+    if (pendingTask.get(u.id) && !textMap[t]) {
+      pendingTask.delete(u.id);
+      return quickTask(ctx, u, t);
+    }
+    if (textMap[t]) pendingTask.delete(u.id);
     if (textMap[t] === 'newdeal') return startDealWizard(ctx);
     if (textMap[t] === 'deals') return sendDeals(ctx);
     const wiz = wizards.get(u.id);
@@ -891,6 +940,73 @@ function monthCard(d) {
   );
 }
 
+/* ───────── задачі ───────── */
+const pendingTask = new Map();
+const addDay = (iso, n) => { const d = new Date(`${iso}T12:00:00Z`); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+const ddmm = (iso) => (iso ? `${iso.slice(8, 10)}.${iso.slice(5, 7)}` : '');
+
+function taskCard(p) {
+  const lines = [`${p.icon || '📝'} <b>${esc(p.title || 'Без назви')}</b>`, ''];
+  lines.push(`Статус: <b>${statusName(p.status)}</b>`);
+  if (p.assignee_name) lines.push(`Відповідальний: ${esc(p.assignee_name)}`);
+  if (p.due) lines.push(`Дедлайн: ${p.overdue ? '🔴 ' : ''}${ddmm(p.due)}`);
+  if (p.priority) lines.push(`Пріоритет: ${priorityName(p.priority)}`);
+  if (p.project_name) lines.push(`Проєкт: ${esc(p.project_name)}`);
+  if (p.tags?.length) lines.push(p.tags.map((t) => `#${esc(t)}`).join(' '));
+  if (p.checklist) lines.push(`Чекліст: ${p.checklist.done}/${p.checklist.total}`);
+  return lines.join('\n');
+}
+function taskKb(p) {
+  const kb = new InlineKeyboard();
+  if (p.status !== 'done') {
+    kb.text('✅ Готово', `tk:done:${p.id}`);
+    if (p.status !== 'doing') kb.text('▶️ В роботу', `tk:doing:${p.id}`);
+    else kb.text('👀 На перевірку', `tk:review:${p.id}`);
+    kb.row().text('📅 На завтра', `tk:tmr:${p.id}`);
+    if (!p.assignee_id) kb.text('🙋 Беру', `tk:me:${p.id}`);
+  } else {
+    kb.text('↩️ Повернути в роботу', `tk:doing:${p.id}`);
+  }
+  const url = pageAppUrl(p.id);
+  if (url) kb.row().webApp('Відкрити сторінку', url);
+  return kb;
+}
+async function quickTask(ctx, u, text) {
+  const parsed = parseTaskText(text, today());
+  if (!parsed.title) return ctx.reply('Порожня задача 🤔 Напиши, що треба зробити.');
+  const page = createPage({ kind: 'task', status: 'todo', ...parsed, assignee_id: parsed.assignee_id || u.id }, u);
+  if (page.assignee_id !== u.id) notifyTask('assigned', page, u);
+  return ctx.reply(`Додано ✨\n\n${taskCard(page)}`, { parse_mode: 'HTML', reply_markup: taskKb(page) });
+}
+async function sendMyTasks(ctx, u) {
+  const rows = myOpenTasks(u.id, 12);
+  if (!rows.length) return ctx.reply('🎉 Відкритих задач немає. Додати: «📝 Задача» або /task текст', { reply_markup: appBtn(u) });
+  const kb = new InlineKeyboard();
+  rows.forEach((p) => kb.text(`✅ ${(p.title || 'Без назви').slice(0, 28)}`, `tk:done:${p.id}`).text('›', `tk:view:${p.id}`).row());
+  const url = appUrl(u.tg_id);
+  if (url) kb.webApp('🗂 Усі задачі', `${url.replace(/\/$/, '')}/?tab=tasks`);
+  return ctx.reply(`✅ <b>Мої задачі</b> · ${rows.length}\n\n${rows.map((p) => esc(taskLine(p))).join('\n')}\n\nТисни ✅, щоб закрити, або › — деталі.`, { parse_mode: 'HTML', reply_markup: kb });
+}
+/** Сповіщення про задачу: призначили, закрили, новий коментар. */
+export async function notifyTask(kind, page, actor, extra = {}) {
+  if (!bot || !page) return;
+  const who = esc(actor?.name || 'Хтось');
+  const targets = new Set();
+  let head = '';
+  if (kind === 'assigned') { targets.add(page.assignee_id); head = `📌 ${who} призначив(ла) тобі задачу`; }
+  if (kind === 'done') { targets.add(extra.to); head = `✅ ${who} закрив(ла) задачу`; }
+  if (kind === 'comment') {
+    [page.assignee_id, page.created_by].forEach((x) => targets.add(x));
+    head = `💬 ${who} прокоментував(ла):\n<i>${esc(String(extra.text || '').slice(0, 400))}</i>`;
+  }
+  targets.delete(actor?.id);
+  for (const id of targets) {
+    if (!id) continue;
+    const t = get("SELECT tg_id FROM users WHERE id = ? AND status = 'active' AND notify = 1", id);
+    if (t?.tg_id) await bot.api.sendMessage(t.tg_id, `${head}\n\n${taskCard(page)}`, { parse_mode: 'HTML', reply_markup: taskKb(page) }).catch(() => {});
+  }
+}
+
 export async function notifyAdmins(html, extra = {}) {
   if (!bot) return;
   const admins = all("SELECT tg_id FROM users WHERE role='admin' AND status='active' AND notify=1 AND tg_id IS NOT NULL");
@@ -920,6 +1036,8 @@ export async function startBot() {
       { command: 'balance', description: 'Баланси рахунків' },
       { command: 'report', description: 'Звіт за місяць' },
       { command: 'pending', description: 'Операції на перевірці' },
+      { command: 'task', description: 'Нова задача: /task текст @нік завтра !' },
+      { command: 'tasks', description: 'Мої задачі' },
       { command: 'deal', description: 'Новий проєкт (як у таблиці)' },
       { command: 'deals', description: 'Проєкти в роботі' },
       { command: 'summary', description: 'Підсумки маржі по місяцях' },
@@ -1019,6 +1137,17 @@ export function scheduleJobs() {
         if (!i.paid && [7, 3, 1].includes(i.days_left)) {
           await notifyAdmins(`🧾 Через ${i.days_left} дн. (${i.due}) сплатити: <b>${esc(i.title)}</b> — ${fmt(i.amount, 'UAH')}`);
         }
+      }
+    }
+
+    // задачі, що горять, — кожному о 9:00
+    if (h === 9 && m < 15 && once('last_task_digest', day) && bot) {
+      for (const p of all("SELECT * FROM users WHERE status = 'active' AND notify = 1 AND tg_id IS NOT NULL")) {
+        const rows = dueDigest(p.id, day);
+        if (!rows.length) continue;
+        const kb = new InlineKeyboard();
+        rows.slice(0, 8).forEach((x) => kb.text(`✅ ${(x.title || 'Без назви').slice(0, 30)}`, `tk:done:${x.id}`).row());
+        await bot.api.sendMessage(p.tg_id, `☀️ <b>Задачі на сьогодні</b>\n\n${rows.map((x) => esc(taskLine(x))).join('\n')}`, { parse_mode: 'HTML', reply_markup: kb, disable_notification: true }).catch(() => {});
       }
     }
 

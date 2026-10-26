@@ -17,6 +17,10 @@ import {
 import { createDocument, listDocuments, renderDocument, requisites, saveRequisites } from './services/documents.js';
 import { linkMonoAccount, makeBackup, monoAccounts, monoEnabled, setMonoWebhook, syncMono } from './services/integrations.js';
 import { aiEnabled } from './services/ai.js';
+import {
+  COVERS, PAGE_TEMPLATES, PRIORITIES, STATUSES, addComment, createPage, deleteComment, duplicatePage, getPage, listPages,
+  purgePage, restorePage, tagList, trashPage, updatePage,
+} from './services/tasks.js';
 import { METHODS, SECTIONS, dealBalances, deleteDeal, getDeal, importSnapshot, listDeals, monthlySummary, saveDeal } from './services/deals.js';
 
 const api = Router();
@@ -523,13 +527,64 @@ api.post('/backup', guard(can.manageSettings), async (req, res) => {
 
 api.get('/search', (req, res) => {
   const q = `%${(req.query.q || '').trim()}%`;
-  if (q.length < 3) return res.json({ transactions: [], projects: [], clients: [] });
+  if (q.length < 3) return res.json({ transactions: [], projects: [], clients: [], pages: [] });
   res.json({
     transactions: listTx({ q: req.query.q, limit: 15 }, req.user).rows,
     projects: all('SELECT id, name, status FROM projects WHERE name LIKE ? LIMIT 8', q),
     clients: all('SELECT id, name FROM clients WHERE name LIKE ? LIMIT 8', q),
+    pages: listPages({ q: req.query.q, limit: 10 }),
   });
 });
+
+/* ───────── Задачі та сторінки (як у Notion) ───────── */
+const writePages = guard((u) => u.role !== 'viewer', 'У режимі перегляду не можна змінювати задачі');
+const SEEN_ROLES = new Set(['admin', 'finance', 'member', 'viewer']);
+function pageQuery(req) {
+  const q = { ...req.query };
+  if (q.assignee === 'me') q.assignee_id = req.user.id;
+  else if (q.assignee === 'none') q.unassigned = true;
+  else if (q.assignee) q.assignee_id = Number(q.assignee);
+  q.open = q.open === '1';
+  q.trash = q.trash === '1';
+  if (q.parent === 'root') q.parent_id = null;
+  else if (q.parent) q.parent_id = Number(q.parent);
+  return q;
+}
+/** Сповіщення в Telegram: призначили задачу / новий коментар. Не блокує відповідь. */
+function notifyPage(kind, page, actor, extra = {}) {
+  import('./bot.js').then(({ notifyTask }) => notifyTask?.(kind, page, actor, extra)).catch((e) => console.warn('notify page', e.message || e));
+}
+
+api.get('/pages/meta', (req, res) => res.json({
+  statuses: STATUSES, priorities: PRIORITIES, covers: COVERS, tags: tagList(), templates: Object.keys(PAGE_TEMPLATES),
+  members: all("SELECT id, name, username, role FROM users WHERE status = 'active' ORDER BY name").filter((u) => SEEN_ROLES.has(u.role)),
+  projects: all("SELECT id, name, status, section FROM projects WHERE status != 'cancelled' ORDER BY closed, id DESC LIMIT 300"),
+}));
+api.get('/pages', (req, res) => res.json(listPages(pageQuery(req))));
+api.get('/pages/:id', (req, res) => res.json(getPage(needId(req))));
+api.post('/pages', writePages, (req, res) => {
+  const body = req.body || {};
+  const tpl = PAGE_TEMPLATES[body.template] ? PAGE_TEMPLATES[body.template]() : {};
+  const page = createPage({ ...tpl, ...Object.fromEntries(Object.entries(body).filter(([k, v]) => k !== 'template' && v !== undefined && !(k === 'title' && !v && tpl.title))) }, req.user);
+  if (page.assignee_id && page.assignee_id !== req.user.id) notifyPage('assigned', page, req.user);
+  res.status(201).json(page);
+});
+api.patch('/pages/:id', writePages, (req, res) => {
+  const { page, before } = updatePage(needId(req), req.body || {}, req.user);
+  if (page.assignee_id && page.assignee_id !== before.assignee_id && page.assignee_id !== req.user.id) notifyPage('assigned', page, req.user);
+  if (page.status !== before.status && page.status === 'done' && before.created_by && before.created_by !== req.user.id) notifyPage('done', page, req.user, { to: before.created_by });
+  res.json(page);
+});
+api.post('/pages/:id/duplicate', writePages, (req, res) => res.status(201).json(duplicatePage(needId(req), req.user)));
+api.delete('/pages/:id', writePages, (req, res) => res.json(trashPage(needId(req), req.user)));
+api.post('/pages/:id/restore', writePages, (req, res) => res.json(restorePage(needId(req), req.user)));
+api.delete('/pages/:id/purge', writePages, (req, res) => res.json(purgePage(needId(req), req.user)));
+api.post('/pages/:id/comments', writePages, (req, res) => {
+  const c = addComment(needId(req), req.body?.text, req.user);
+  notifyPage('comment', getPage(needId(req)), req.user, { text: c.text });
+  res.status(201).json(c);
+});
+api.delete('/comments/:id', writePages, (req, res) => res.json(deleteComment(needId(req), req.user, req.user.role === 'admin')));
 
 export { api, fmt, fromMinor };
 export const apiErrorHandler = (err, req, res, _next) => {

@@ -285,6 +285,49 @@ await test('HTML in names is escaped', async () => {
   });
 }
 
+
+await test('/task → task with assignee, due, priority, tags; buttons work', async () => {
+  run("INSERT OR IGNORE INTO users(tg_id, name, username, role, status) VALUES(9777, 'Олена Дизайн', 'olena_d', 'member', 'active')");
+  await text(111, '/task Банер для ABV @olena_d завтра !! #дизайн');
+  const r = lastReply();
+  assert.match(r.payload.text, /Банер для ABV/);
+  assert.match(r.payload.text, /Олена Дизайн/);
+  assert.match(r.payload.text, /Терміново/);
+  const p = get("SELECT * FROM pages WHERE title = 'Банер для ABV'");
+  assert.equal(p.priority, 'urgent');
+  assert.deepEqual(JSON.parse(p.tags), ['дизайн']);
+  assert.ok(p.due);
+  // виконавцю прийшло сповіщення
+  assert.ok(sent.some((x) => x.method === 'sendMessage' && x.payload.chat_id === 9777 && /призначив/.test(x.payload.text)));
+  const kb = lastKbData();
+  assert.ok(kb.includes(`tk:done:${p.id}`));
+  sent.length = 0;
+  await tap(9777, `tk:doing:${p.id}`);
+  assert.equal(get('SELECT status FROM pages WHERE id=?', p.id).status, 'doing');
+  await tap(9777, `tk:done:${p.id}`);
+  assert.equal(get('SELECT status FROM pages WHERE id=?', p.id).status, 'done');
+  // автору (адміну) — що задачу закрили
+  assert.ok(sent.some((x) => x.method === 'sendMessage' && x.payload.chat_id === 111 && /закрив/.test(x.payload.text)));
+});
+
+await test('📝 Задача button → next message becomes a task, not an operation', async () => {
+  const txBefore = get('SELECT COUNT(*) AS n FROM transactions').n;
+  await text(111, '📝 Задача');
+  assert.match(lastReply().payload.text, /Напиши задачу/);
+  await text(111, 'Оплатити 300 грн за домен пт');
+  assert.equal(get('SELECT COUNT(*) AS n FROM transactions').n, txBefore);
+  const p = get("SELECT * FROM pages WHERE title LIKE 'Оплатити 300 грн%'");
+  assert.ok(p && p.due && p.assignee_id);
+});
+
+await test('/tasks lists my open tasks with ✅ buttons', async () => {
+  await text(111, '/tasks');
+  const r = lastReply();
+  assert.match(r.payload.text, /Мої задачі/);
+  assert.match(r.payload.text, /Оплатити 300 грн/);
+  assert.ok(lastKbData().some((d) => d?.startsWith('tk:done:')));
+});
+
 console.log(`\n${passed} passed${process.exitCode ? ', FAILURES above' : ''}`);
 fs.rmSync(dir, { recursive: true, force: true });
 process.exit(process.exitCode || 0);

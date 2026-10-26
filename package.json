@@ -8,7 +8,7 @@
     "dev": "DEV_MODE=1 node --disable-warning=ExperimentalWarning --watch src/index.js",
     "import": "node --disable-warning=ExperimentalWarning scripts/import.js",
     "seed": "node --disable-warning=ExperimentalWarning scripts/seed-demo.js",
-    "test": "node --disable-warning=ExperimentalWarning tests/api.test.mjs && node --disable-warning=ExperimentalWarning tests/bot.test.mjs && node --disable-warning=ExperimentalWarning tests/mono.test.mjs && node --disable-warning=ExperimentalWarning tests/deals.test.mjs"
+    "test": "node --disable-warning=ExperimentalWarning tests/api.test.mjs && node --disable-warning=ExperimentalWarning tests/bot.test.mjs && node --disable-warning=ExperimentalWarning tests/mono.test.mjs && node --disable-warning=ExperimentalWarning tests/deals.test.mjs && node --disable-warning=ExperimentalWarning tests/tasks.test.mjs"
   },
   "author": "",
   "license": "UNLICENSED",
