@@ -313,12 +313,13 @@ api.get('/settings', guard(can.manageSettings), (req, res) => {
     member_needs_approval: getSetting('member_needs_approval') === '1',
     notify_new_tx: getSetting('notify_new_tx') === '1',
     daily_digest: getSetting('daily_digest') === '1',
+    daily_backup: getSetting('daily_backup') === '1',
     summary_by: getSetting('summary_by', 'end'),
   });
 });
 api.post('/settings', guard(can.manageSettings), (req, res) => {
   for (const [k, v] of Object.entries(req.body || {})) {
-    if (['company_name', 'base_currency', 'member_sees_all', 'member_needs_approval', 'notify_new_tx', 'daily_digest', 'summary_by'].includes(k)) {
+    if (['company_name', 'base_currency', 'member_sees_all', 'member_needs_approval', 'notify_new_tx', 'daily_digest', 'daily_backup', 'summary_by'].includes(k)) {
       setSetting(k, typeof v === 'boolean' ? (v ? '1' : '0') : v);
     }
   }

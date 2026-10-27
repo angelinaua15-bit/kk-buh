@@ -688,6 +688,7 @@ async function renderSettings() {
     <label class="switch">Команда бачить усі операції <input type="checkbox" name="member_sees_all" ${s.member_sees_all?'checked':''}></label>
     <label class="switch">Операції команди на перевірку <input type="checkbox" name="member_needs_approval" ${s.member_needs_approval?'checked':''}></label>
     <label class="switch">Ранковий дайджест адміну <input type="checkbox" name="daily_digest" ${s.daily_digest?'checked':''}></label>
+    <label class="switch">Щовечора надсилати резервну копію бази <input type="checkbox" name="daily_backup" ${s.daily_backup?'checked':''}></label>
     <label>Підсумки місяця рахувати<select name="summary_by"><option value="end" ${s.summary_by!=='start'?'selected':''}>за датою завершення проєкту</option><option value="start" ${s.summary_by==='start'?'selected':''}>за датою початку</option></select></label>
     <button class="btn">Зберегти</button>
     <button type="button" class="btn ghost" id="nbu">Оновити курси НБУ</button>
@@ -1183,6 +1184,7 @@ document.body.addEventListener('submit', async (e) => {
     member_sees_all: fd.get('member_sees_all') === 'on',
     member_needs_approval: fd.get('member_needs_approval') === 'on',
     daily_digest: fd.get('daily_digest') === 'on',
+    daily_backup: fd.get('daily_backup') === 'on',
     summary_by: fd.get('summary_by'),
   }});
   toast('Збережено');

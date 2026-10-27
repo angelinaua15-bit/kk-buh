@@ -1188,7 +1188,7 @@ export async function startBot() {
   setup().catch((e) => console.error('bot setup', e.message || e));
   if (!config.persistent) {
     console.warn('⚠️ No Railway Volume: database is recreated on every deploy');
-    setTimeout(() => notifyAdmins('⚠️ <b>База бота не зберігається між оновленнями.</b>\n\nНа Railway не підключено Volume, тому після кожного деплою зникають люди з доступом, операції й задачі (лишається тільки те, що підтягується з Google-таблиці).\n\nЯк виправити: Railway → сервіс kk-buh → <b>Volumes → New Volume</b>, Mount path: <code>/data</code>. Потім відновити базу з останньої резервної копії (файл .sqlite, який бот надсилає щовечора).').catch(() => {}), 15000);
+    setTimeout(() => notifyAdmins('⚠️ <b>База бота не зберігається між оновленнями.</b>\n\nНа Railway не підключено Volume, тому після кожного деплою зникають люди з доступом, операції й задачі (лишається тільки те, що підтягується з Google-таблиці).\n\nЯк виправити: Railway → сервіс kk-buh → <b>Volumes → New Volume</b>, Mount path: <code>/data</code>.').catch(() => {}), 15000);
   }
 }
 
@@ -1257,8 +1257,8 @@ export function scheduleJobs() {
       await notifyAdmins(weeklyReport(day));
     }
 
-    // бекап бази — щодня о 23:30 адмінам у чат
-    if (h === 23 && m >= 30 && once('last_backup', day) && bot) {
+    // бекап бази в чат — лише якщо увімкнено в налаштуваннях (за замовчуванням вимкнено; вручну — /backup)
+    if (h === 23 && m >= 30 && getSetting('daily_backup') === '1' && once('last_backup', day) && bot) {
       try {
         const { buffer, filename } = makeBackup();
         const admins = all("SELECT tg_id FROM users WHERE role='admin' AND status='active' AND tg_id IS NOT NULL");
