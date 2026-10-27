@@ -375,6 +375,27 @@ const TBL_COLS = [
   { id: 'project_id', name: 'Проєкт' },
   { id: 'tags', name: 'Теги' },
 ];
+function tblRow(r) {
+  return `<tr data-id="${r.id}" class="${r.status === 'done' ? 'is-done' : ''}">
+      <td class="c-title" data-page="${r.id}"><span>${r.icon ? esc(r.icon) + ' ' : ''}${esc(r.title || 'Без назви')}</span>${r.checklist ? `<small>☑ ${r.checklist.done}/${r.checklist.total}</small>` : ''}</td>
+      <td data-prop="status">${stPill(r.status)}</td>
+      <td data-prop="assignee_id">${r.assignee_name ? `${avatar(r.assignee_name, 'sm')} ${esc(r.assignee_name)}` : '<span class="ph">—</span>'}</td>
+      <td data-prop="due" class="${r.overdue ? 'late' : ''}">${r.due ? esc(relDate(r.due)) : '<span class="ph">—</span>'}</td>
+      <td data-prop="priority">${prPill(r.priority) || '<span class="ph">—</span>'}</td>
+      <td data-prop="project_id">${r.project_name ? esc(r.project_name) : '<span class="ph">—</span>'}</td>
+      <td data-prop="tags">${tagPills(r.tags) || '<span class="ph">—</span>'}</td>
+    </tr>`;
+}
+/** Миттєво показуємо зміну локально, а сервер оновлюємо у фоні. */
+function applyLocal(row, patch) {
+  const m = TK.meta;
+  Object.assign(row, patch);
+  if ('assignee_id' in patch) row.assignee_name = m.members.find((u) => u.id === patch.assignee_id)?.name || null;
+  if ('project_id' in patch && patch.project_id) { row.project_name = m.projects.find((p) => p.id === patch.project_id)?.name || row.project_name; row.project_label = null; }
+  if ('project_id' in patch && !patch.project_id && !patch.project_label) row.project_name = null;
+  if (patch.project_label) { row.project_name = patch.project_label; row.project_id = null; }
+  row.overdue = Boolean(row.due && row.status !== 'done' && row.due < today());
+}
 function renderTable(box) {
   const f = state.tk;
   let rows = [...TK.rows];
@@ -392,15 +413,7 @@ function renderTable(box) {
   }
   box.innerHTML = `<div class="ntbl-wrap"><table class="ntbl">
     <thead><tr>${TBL_COLS.map((c) => `<th data-tk="sort" data-v="${c.id}">${c.name}${f.sort === c.id ? (f.dir > 0 ? ' ↑' : ' ↓') : ''}</th>`).join('')}</tr></thead>
-    <tbody>${rows.map((r) => `<tr data-id="${r.id}" class="${r.status === 'done' ? 'is-done' : ''}">
-      <td class="c-title" data-page="${r.id}"><span>${r.icon ? esc(r.icon) + ' ' : ''}${esc(r.title || 'Без назви')}</span>${r.checklist ? `<small>☑ ${r.checklist.done}/${r.checklist.total}</small>` : ''}</td>
-      <td data-prop="status">${stPill(r.status)}</td>
-      <td data-prop="assignee_id">${r.assignee_name ? `${avatar(r.assignee_name, 'sm')} ${esc(r.assignee_name)}` : '<span class="ph">—</span>'}</td>
-      <td data-prop="due" class="${r.overdue ? 'late' : ''}">${r.due ? esc(relDate(r.due)) : '<span class="ph">—</span>'}</td>
-      <td data-prop="priority">${prPill(r.priority) || '<span class="ph">—</span>'}</td>
-      <td data-prop="project_id">${r.project_name ? esc(r.project_name) : '<span class="ph">—</span>'}</td>
-      <td data-prop="tags">${tagPills(r.tags) || '<span class="ph">—</span>'}</td>
-    </tr>`).join('')}
+    <tbody>${rows.map(tblRow).join('')}
     ${canWritePages() ? `<tr class="ntbl-add"><td colspan="${TBL_COLS.length}"><input id="tblNew" placeholder="＋ Нова задача — Enter, щоб додати"></td></tr>` : ''}
     </tbody></table></div>
     <p class="muted tk-count">${rows.length} ${plural(rows.length, 'задача', 'задачі', 'задач')}</p>`;
@@ -618,14 +631,24 @@ document.body.addEventListener('click', (e) => {
   if (cell && canWritePages()) {
     const id = Number(cell.closest('tr').dataset.id);
     const row = TK.rows.find((r) => r.id === id);
-    return propPicker(cell.dataset.prop, row, cell, async (patch, keep) => {
-      try {
-        const upd = await api('/pages/' + id, { method: 'PATCH', body: patch });
-        Object.assign(row, upd);
-        if (upd.assignee_invite) showInvite(upd);
-        if (!keep) renderTable($('tkBody'));
-        else cell.innerHTML = tagPills(upd.tags) || '<span class="ph">—</span>';
-      } catch (err) { toast(err.message); }
+    return propPicker(cell.dataset.prop, row, cell, (patch) => {
+      const before = { ...row };
+      applyLocal(row, patch);
+      const tr = cell.closest('tr');
+      tr.outerHTML = tblRow(row);
+      clearTimeout(row._t);
+      // теги клацають кілька разів поспіль — відправляємо один раз
+      row._t = setTimeout(async () => {
+        try {
+          const upd = await api('/pages/' + id, { method: 'PATCH', body: patch.tags ? { tags: row.tags } : patch });
+          Object.assign(row, upd);
+          if (upd.assignee_invite) showInvite(upd);
+        } catch (err) {
+          toast(err.message);
+          Object.assign(row, before);
+          document.querySelector(`.ntbl tr[data-id="${id}"]`)?.replaceWith(Object.assign(document.createElement('tbody'), { innerHTML: tblRow(row) }).firstElementChild);
+        }
+      }, patch.tags ? 400 : 0);
     });
   }
   const pg = e.target.closest('[data-page]');
@@ -903,17 +926,32 @@ async function flushSave() {
   await TK.saving;
 }
 async function patchPage(patch) {
-  await flushSave();
-  try {
-    const upd = await api('/pages/' + TK.page.id, { method: 'PATCH', body: patch });
-    if (upd.assignee_invite) showInvite(upd);
-    const blocks = TK.page.blocks;
-    TK.page = { ...upd, blocks };
+  const page = TK.page;
+  const redraw = () => {
     const scroll = document.getElementById('pgScroll')?.scrollTop;
     drawPage(pageShell());
     if (scroll) document.getElementById('pgScroll').scrollTop = scroll;
+  };
+  // властивості — миттєво на екрані, сервер у фоні
+  const simple = Object.keys(patch).every((k) => ['status', 'priority', 'assignee_id', 'due', 'project_id', 'project_label', 'icon', 'cover'].includes(k));
+  const before = { ...page };
+  if (simple) {
+    applyLocal(page, patch);
+    redraw();
     if (patch.status === 'done') confettiAt(document.querySelector('.pp[data-prop=status]') || document.body);
-  } catch (e) { toast(e.message); }
+  }
+  await flushSave();
+  try {
+    const upd = await api('/pages/' + page.id, { method: 'PATCH', body: patch });
+    if (upd.assignee_invite) showInvite(upd);
+    if (TK.page !== page) return;
+    const { blocks } = page;
+    Object.assign(page, upd, { blocks });
+    if (!simple) redraw();
+  } catch (e) {
+    toast(e.message);
+    if (simple && TK.page === page) { Object.assign(page, before); redraw(); }
+  }
 }
 
 /* операції з блоками */

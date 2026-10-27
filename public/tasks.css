@@ -310,3 +310,14 @@ body.pg-open { overflow: hidden; }
 .pk-inv { padding: 4px 10px 6px; display: grid; gap: 10px; }
 .pk-inv p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.45; }
 .pk-it small[title] { color: var(--amber-c); }
+
+/* продуктивність на телефонах: без липкої колонки й розмиття під час прокрутки */
+.ntbl-wrap { -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain; contain: layout paint; }
+@media (pointer: coarse) {
+  .ntbl .c-title, .ntbl th:first-child { position: static; }
+  .ntbl td[data-prop]:hover, .ntbl .c-title:hover { background: none; }
+  .ntbl td:active { background: var(--hover); }
+  .tabs { backdrop-filter: none !important; background: rgba(6,5,26,.98) !important; }
+  .pg-kbar { backdrop-filter: none; }
+  .pk, .pk-wrap { animation: none !important; }
+}
