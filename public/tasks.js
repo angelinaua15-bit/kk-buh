@@ -1571,6 +1571,12 @@ screens.tasks = renderTasks;
 const _renderDash = screens.dash;
 screens.dash = async () => {
   await _renderDash();
+  if (state.me?.features?.persistent === false && state.me.user.role === 'admin') {
+    const w = document.createElement('div');
+    w.className = 'card warn';
+    w.innerHTML = '<b>⚠️ База не зберігається між оновленнями</b><p class="muted" style="margin:6px 0 0">На Railway не підключено Volume — після кожного деплою зникають люди з доступом, операції й задачі. Railway → kk-buh → Volumes → New Volume, шлях <code>/data</code>.</p>';
+    view().prepend(w);
+  }
   try {
     await tkMeta();
     const mine = await api('/pages?kind=task&assignee=me&open=1');

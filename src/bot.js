@@ -1186,6 +1186,10 @@ export async function startBot() {
     console.log('Bot idle locally — production webhook kept. RUN_POLLING=1 to poll.');
   }
   setup().catch((e) => console.error('bot setup', e.message || e));
+  if (!config.persistent) {
+    console.warn('⚠️ No Railway Volume: database is recreated on every deploy');
+    setTimeout(() => notifyAdmins('⚠️ <b>База бота не зберігається між оновленнями.</b>\n\nНа Railway не підключено Volume, тому після кожного деплою зникають люди з доступом, операції й задачі (лишається тільки те, що підтягується з Google-таблиці).\n\nЯк виправити: Railway → сервіс kk-buh → <b>Volumes → New Volume</b>, Mount path: <code>/data</code>. Потім відновити базу з останньої резервної копії (файл .sqlite, який бот надсилає щовечора).').catch(() => {}), 15000);
+  }
 }
 
 /** Планувальник: щохвилини перевіряє, чи настав час для кожної задачі (у часовому поясі компанії). */

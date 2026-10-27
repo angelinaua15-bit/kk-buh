@@ -76,7 +76,7 @@ api.get('/me', (req, res) => {
       member_sees_all: getSetting('member_sees_all') === '1',
       member_needs_approval: getSetting('member_needs_approval') === '1',
     },
-    features: { ai: aiEnabled(), mono: monoEnabled(), sheet: Boolean(config.syncToken) },
+    features: { ai: aiEnabled(), mono: monoEnabled(), sheet: Boolean(config.syncToken), persistent: config.persistent },
   });
 });
 

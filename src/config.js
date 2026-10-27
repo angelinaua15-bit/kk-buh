@@ -27,7 +27,9 @@ function resolveWebAppUrl() {
   return raw || railwayUrl;
 }
 
-const persistDir = fs.existsSync('/data') ? '/data' : path.join(ROOT, 'data');
+// Railway: база живе між деплоями лише на підключеному Volume (RAILWAY_VOLUME_MOUNT_PATH)
+const volumePath = env.RAILWAY_VOLUME_MOUNT_PATH || '';
+const persistDir = volumePath || (fs.existsSync('/data') ? '/data' : path.join(ROOT, 'data'));
 fs.mkdirSync(persistDir, { recursive: true });
 
 const webAppUrl = resolveWebAppUrl();
@@ -42,6 +44,9 @@ export const config = {
   dbPath: env.DB_PATH || path.join(persistDir, 'kkbuh.sqlite'),
   webhookSecret: env.WEBHOOK_SECRET || '',
   onRailway,
+  volumePath,
+  /** false — на Railway без Volume: після кожного деплою база створюється заново */
+  persistent: !onRailway || Boolean(volumePath) || Boolean(env.DB_PATH),
   useWebhook: env.USE_WEBHOOK === '1' || onRailway,
   runPolling: env.RUN_POLLING === '1',
   forceTelegramIp: env.TELEGRAM_FORCE_IP === '1',

@@ -80,6 +80,8 @@ app.get('/health', (_req, res) => res.json({
   ok: true,
   webAppUrl: config.webAppUrl || null,
   webhook: config.useWebhook,
+  persistent: config.persistent,
+  db: config.dbPath,
 }));
 app.use(express.static(path.join(ROOT, 'public'), {
   maxAge: 0,
