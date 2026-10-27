@@ -507,10 +507,11 @@ function projFilterBody() {
 }
 
 /* ═══════════════ Пікер (випадаюче меню) ═══════════════ */
-function picker({ title, items, multi, search, value, onPick, extra, onCreate, anchor, createLabel }) {
+function picker({ title, items, multi, search, value, onPick, extra, onCreate, anchor, createLabel, prop }) {
   closePicker();
   const box = document.createElement('div');
   box.className = 'pk-wrap';
+  if (prop) box.dataset.prop = prop;
   box.innerHTML = `<div class="pk">${title ? `<div class="pk-title">${esc(title)}</div>` : ''}
     ${search ? `<input class="pk-search" placeholder="${onCreate ? 'Знайти або створити…' : 'Пошук…'}">` : ''}
     <div class="pk-list"></div>${extra || ''}</div>`;
@@ -564,7 +565,13 @@ function propPicker(prop, row, anchor, apply) {
   if (prop === 'status') return picker({ title: 'Статус', anchor, value: row.status, items: m.statuses.map((s) => ({ id: s.id, label: s.name, html: stPill(s.id) })), onPick: (v) => apply({ status: v }) });
   if (prop === 'priority') return picker({ title: 'Пріоритет', anchor, value: row.priority || '', items: [{ id: '', label: 'Без пріоритету', html: '<span class="ph">Без пріоритету</span>' }, ...m.priorities.map((p) => ({ id: p.id, label: p.name, html: prPill(p.id) }))], onPick: (v) => apply({ priority: v || null }) });
   if (prop === 'assignee_id') {
-    return picker({
+    // список людей завжди свіжий — щоб одразу бачити тих, хто щойно зайшов у бота
+    api('/pages/meta').then((fresh) => {
+      TK.meta = fresh;
+      const box = document.querySelector('.pk-wrap');
+      if (box && box.dataset.prop === 'assignee_id' && fresh.members.length !== m.members.length) propPicker(prop, row, anchor, apply);
+    }).catch(() => {});
+    return picker({ prop: 'assignee_id',
       title: 'Відповідальний', anchor, search: m.members.length > 6, value: row.assignee_id || '',
       items: [{ id: '', label: 'Нікого', html: '<span class="ph">Нікого</span>' }, ...m.members.map((u) => ({ id: u.id, label: u.name, keys: (u.username || '').toLowerCase(), html: `${avatar(u.name, 'sm')} ${esc(u.name)}${u.username ? ` <small>@${esc(u.username)}</small>` : ''}${u.id === state.me.user.id ? ' <small>(я)</small>' : ''}${u.status !== 'active' ? ' <small title="Користується ботом, але доступ до бухгалтерії ще не підтверджено">⏳</small>' : ''}` }))],
       onPick: (v) => apply({ assignee_id: v || null }),

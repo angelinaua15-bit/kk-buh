@@ -1,6 +1,8 @@
 import express from 'express';
 import path from 'node:path';
 import { config, ROOT } from './config.js';
+import { get } from './db.js';
+const startedAt = new Date().toISOString();
 import { api, apiErrorHandler } from './api.js';
 import { onJoin, onNewUser } from './auth.js';
 import { bot, notifyAdmins, scheduleJobs, startBot } from './bot.js';
@@ -82,6 +84,8 @@ app.get('/health', (_req, res) => res.json({
   webhook: config.useWebhook,
   persistent: config.persistent,
   db: config.dbPath,
+  people: (() => { try { return get("SELECT COUNT(*) AS n FROM users WHERE tg_id IS NOT NULL").n; } catch { return null; } })(),
+  started: startedAt,
 }));
 app.use(express.static(path.join(ROOT, 'public'), {
   maxAge: 0,
