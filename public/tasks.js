@@ -121,7 +121,7 @@ async function tkLoad() {
   const p = new URLSearchParams({ kind: 'task' });
   if (f.who === 'me') p.set('assignee', 'me');
   if (f.who === 'none') p.set('assignee', 'none');
-  if (f.project) p.set('project_id', f.project);
+  if (f.project) { if (f.project.startsWith('l:')) p.set('project_label', f.project.slice(2)); else p.set('project_id', f.project); }
   if (f.q) p.set('q', f.q);
   TK.rows = await api('/pages?' + p);
   if (f.hideDone) TK.rows = TK.rows.filter((r) => r.status !== 'done' || (r.done_at && Date.now() - Date.parse(r.done_at) < 864e5));
@@ -141,7 +141,7 @@ async function renderTasks() {
     <div class="tk-views">${views.map(([id, l]) => `<button class="${f.view === id ? 'on' : ''}" data-tk="view" data-v="${id}">${l}</button>`).join('')}</div>
     ${f.view === 'pages' ? '' : `<div class="tk-filters">
       <div class="tk-seg">${[['all', 'Усі'], ['me', 'Мої'], ['none', 'Без відпов.']].map(([id, l]) => `<button class="${f.who === id ? 'on' : ''}" data-tk="who" data-v="${id}">${l}</button>`).join('')}</div>
-      <button class="tk-chip ${f.project ? 'on' : ''}" data-tk="f-project">📁 ${esc(f.project ? (TK.meta.projects.find((p) => String(p.id) === String(f.project))?.name || 'Проєкт') : 'Проєкт')}</button>
+      <button class="tk-chip ${f.project ? 'on' : ''}" data-tk="f-project">📁 ${esc(f.project ? (f.project.startsWith('l:') ? f.project.slice(2) : TK.meta.projects.find((p) => String(p.id) === String(f.project))?.name || 'Проєкт') : 'Проєкт')}</button>
       <button class="tk-chip ${f.hideDone ? 'on' : ''}" data-tk="hide-done">${f.hideDone ? '◌ Без готових' : '◉ З готовими'}</button>
       <input class="tk-search" id="tkSearch" placeholder="Пошук…" value="${esc(f.q)}" autocomplete="off">
     </div>`}
@@ -206,7 +206,7 @@ function quickAdd(btn) {
     try {
       const body = { kind: 'task', status, title };
       if (state.tk.who === 'me' && iCanBeAssignee()) body.assignee_id = state.me.user.id;
-      if (state.tk.project) body.project_id = Number(state.tk.project);
+      if (state.tk.project) Object.assign(body, projFilterBody());
       const smart = parseQuick(title);
       Object.assign(body, smart);
       await api('/pages', { method: 'POST', body });
@@ -410,7 +410,7 @@ function renderTable(box) {
     safe(async () => {
       const body = { kind: 'task', status: 'todo', ...parseQuick(inp.value.trim()) };
       if (state.tk.who === 'me' && iCanBeAssignee()) body.assignee_id ??= state.me.user.id;
-      if (state.tk.project) body.project_id = Number(state.tk.project);
+      if (state.tk.project) Object.assign(body, projFilterBody());
       await api('/pages', { method: 'POST', body });
       await tkBody();
       $('tblNew')?.focus();
@@ -492,6 +492,20 @@ async function openTrash() {
   });
 }
 
+/** Проєкти для вибору: вписані вручну + з бухгалтерії. id ручних — «l:Назва». */
+function projectItems(emptyLabel) {
+  const m = TK.meta;
+  return [
+    { id: '', label: emptyLabel, html: `<span class="ph">${esc(emptyLabel)}</span>` },
+    ...(m.project_labels || []).map((l) => ({ id: `l:${l}`, label: l, html: `✎ ${esc(l)}` })),
+    ...m.projects.map((p) => ({ id: p.id, label: p.name || `#${p.id}`, hint: p.section || '' })),
+  ];
+}
+function projFilterBody() {
+  const v = state.tk.project;
+  return v.startsWith('l:') ? { project_label: v.slice(2) } : { project_id: Number(v) };
+}
+
 /* ═══════════════ Пікер (випадаюче меню) ═══════════════ */
 function picker({ title, items, multi, search, value, onPick, extra, onCreate, anchor, createLabel }) {
   closePicker();
@@ -557,7 +571,15 @@ function propPicker(prop, row, anchor, apply) {
       extra: '<div class="pk-note">Тут усі, хто писав боту. ⏳ — доступ до бухгалтерії ще не підтверджено (задачу людина все одно отримає). Нових людей запрошуй: /invite.</div>',
     });
   }
-  if (prop === 'project_id') return picker({ title: 'Проєкт', anchor, search: true, value: row.project_id || '', items: [{ id: '', label: 'Без проєкту', html: '<span class="ph">Без проєкту</span>' }, ...m.projects.map((p) => ({ id: p.id, label: p.name || `#${p.id}`, hint: p.section || '' }))], onPick: (v) => apply({ project_id: v || null }) });
+  if (prop === 'project_id') return picker({
+    title: 'Проєкт', anchor, search: true,
+    value: row.project_id || (row.project_label ? `l:${row.project_label}` : ''),
+    items: projectItems('Без проєкту'),
+    onPick: (v) => apply(String(v).startsWith('l:') ? { project_label: String(v).slice(2) } : { project_id: v || null, project_label: null }),
+    onCreate: (q) => { if (!(m.project_labels ||= []).includes(q)) m.project_labels.unshift(q); apply({ project_label: q }); },
+    createLabel: (q) => `✎ Вписати «${esc(q)}»`,
+    extra: '<div class="pk-note">Немає в списку — просто впиши назву і натисни «Вписати».</div>',
+  });
   if (prop === 'tags') {
     const all = [...new Set([...(m.tags || []), ...(row.tags || [])])];
     let cur = [...(row.tags || [])];
@@ -608,7 +630,7 @@ document.body.addEventListener('click', (e) => {
   if (act === 'view') { f.view = b.dataset.v; f.q = ''; tkRemember(); return renderTasks(); }
   if (act === 'who') { f.who = b.dataset.v; tkRemember(); return renderTasks(); }
   if (act === 'hide-done') { f.hideDone = !f.hideDone; tkRemember(); return renderTasks(); }
-  if (act === 'f-project') return picker({ title: 'Фільтр за проєктом', anchor: b, search: true, value: f.project ? Number(f.project) : '', items: [{ id: '', label: 'Усі проєкти' }, ...TK.meta.projects.map((p) => ({ id: p.id, label: p.name || `#${p.id}`, hint: p.section || '' }))], onPick: (v) => { f.project = v ? String(v) : ''; renderTasks(); } });
+  if (act === 'f-project') return picker({ title: 'Фільтр за проєктом', anchor: b, search: true, value: f.project ? (f.project.startsWith('l:') ? f.project : Number(f.project)) : '', items: projectItems('Усі проєкти'), onPick: (v) => { f.project = v ? String(v) : ''; renderTasks(); } });
   if (act === 'sort') { if (f.sort === b.dataset.v) { if (f.dir < 0) { f.sort = ''; f.dir = 1; } else f.dir = -1; } else { f.sort = b.dataset.v; f.dir = 1; } tkRemember(); return renderTable($('tkBody')); }
   if (act === 'quick-add') return quickAdd(b);
   if (act === 'cal') { f.cal = b.dataset.d === '0' ? ymNow() : shiftMonth(f.cal, Number(b.dataset.d)); return renderCalendar($('tkBody')); }
@@ -646,7 +668,7 @@ async function newPageFlow(body = {}) {
     if (b.kind !== 'page') {
       b.status ||= 'todo';
       if (state.tk.who === 'me' && !b.assignee_id && iCanBeAssignee()) b.assignee_id = state.me.user.id;
-      if (state.tk.project && !b.project_id) b.project_id = Number(state.tk.project);
+      if (state.tk.project && !b.project_id && !b.project_label) Object.assign(b, projFilterBody());
     }
     const p = await api('/pages', { method: 'POST', body: b });
     await openPage(p.id, { fresh: true });

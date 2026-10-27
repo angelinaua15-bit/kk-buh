@@ -135,6 +135,20 @@ try {
     assert.equal((await call('POST', '/pages', { title: 'x', assignee_id: noTg })).status, 400);
     assert.equal((await call('POST', '/people', { name: '@x' })).status, 404);
   });
+  await test('project typed by hand (not from accounting)', async () => {
+    const t = await ok('POST', '/pages', { title: 'Лого', project_label: '  Кавʼярня   Зерно ' });
+    assert.equal(t.project_name, 'Кавʼярня Зерно');
+    assert.equal(t.project_id, null);
+    assert.ok((await ok('GET', '/pages/meta')).project_labels.includes('Кавʼярня Зерно'));
+    assert.equal((await ok('GET', '/pages?kind=task&project_label=' + encodeURIComponent('Кавʼярня Зерно'))).length, 1);
+    const deal = await ok('POST', '/deals', { section: 'Розробки', task: 'Сайт Зерно', price: { amount: 5000, currency: 'USD' } });
+    const linked = await ok('PATCH', `/pages/${t.id}`, { project_id: deal.id });
+    assert.equal(linked.project_label, null);
+    assert.equal(linked.project_name, 'Сайт Зерно');
+    const back = await ok('PATCH', `/pages/${t.id}`, { project_label: 'Інше' });
+    assert.equal(back.project_id, null);
+    assert.equal(back.project_name, 'Інше');
+  });
   await test('deleted (cancelled) project: task stays, project hidden from pickers', async () => {
     const deal = await ok('POST', '/deals', { section: 'Розробки', task: 'Лендинг', price: { amount: 10000, currency: 'USD' } });
     const t = await ok('POST', '/pages', { title: 'Задача проєкту', project_id: deal.id });

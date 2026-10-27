@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS page_comments (
 );
 CREATE INDEX IF NOT EXISTS page_comments_page ON page_comments(page_id);
 `);
+{ const cols = all('PRAGMA table_info(pages)').map((c) => c.name); if (!cols.includes('project_label')) db.exec('ALTER TABLE pages ADD COLUMN project_label TEXT'); }
 
 export const STATUSES = [
   { id: 'todo', name: 'Не почато', color: 'gray' },
@@ -175,7 +176,7 @@ function validDate(d) {
 const LIST_COLS = `p.id, p.parent_id, p.kind, p.title, p.icon, p.cover, p.status, p.priority, p.assignee_id, p.project_id, p.due, p.tags,
   p.sort, p.created_by, p.created_at, p.updated_at, p.done_at, p.deleted_at, p.blocks,
   ua.name AS assignee_name, ua.username AS assignee_username, uc.name AS created_by_name,
-  pr.name AS project_name,
+  COALESCE(pr.name, p.project_label) AS project_name, p.project_label,
   (SELECT COUNT(*) FROM page_comments c WHERE c.page_id = p.id) AS comments`;
 const FROM = `FROM pages p
   LEFT JOIN users ua ON ua.id = p.assignee_id
@@ -211,6 +212,7 @@ export function listPages(q = {}) {
   if (q.assignee_id) { where.push('p.assignee_id = ?'); p.push(Number(q.assignee_id)); }
   if (q.unassigned) where.push('p.assignee_id IS NULL');
   if (q.project_id) { where.push('p.project_id = ?'); p.push(Number(q.project_id)); }
+  if (q.project_label) { where.push('p.project_label = ?'); p.push(String(q.project_label)); }
   if (q.parent_id !== undefined) {
     if (q.parent_id === null) where.push('p.parent_id IS NULL');
     else { where.push('p.parent_id = ?'); p.push(Number(q.parent_id)); }
@@ -246,12 +248,16 @@ export function getPage(id) {
   return page;
 }
 
+/** Назви проєктів, вписані вручну (не з бухгалтерії). */
+export function projectLabels() {
+  return all("SELECT project_label AS name, COUNT(*) AS n FROM pages WHERE project_label IS NOT NULL AND deleted_at IS NULL GROUP BY project_label ORDER BY MAX(updated_at) DESC LIMIT 100").map((r) => r.name);
+}
 export function tagList() {
   return all(`SELECT j.value AS tag, COUNT(*) AS n FROM pages p, json_each(p.tags) j WHERE p.deleted_at IS NULL GROUP BY j.value ORDER BY n DESC, j.value LIMIT 60`).map((r) => r.tag);
 }
 
 /* ───────── запис ───────── */
-const FIELDS = ['title', 'icon', 'cover', 'status', 'priority', 'assignee_id', 'project_id', 'due', 'tags', 'blocks', 'parent_id', 'kind', 'sort'];
+const FIELDS = ['title', 'icon', 'cover', 'status', 'priority', 'assignee_id', 'project_id', 'project_label', 'due', 'tags', 'blocks', 'parent_id', 'kind', 'sort'];
 
 function normalize(body, existing) {
   const out = {};
@@ -271,9 +277,17 @@ function normalize(body, existing) {
       case 'assignee_id':
         if (v && !canBeAssignee(v) && Number(v) !== existing?.assignee_id) throw bad('Цю людину не можна призначити (заблокована або не існує)');
         out.assignee_id = v ? Number(v) : null; break;
+      case 'project_label': {
+        const l = String(v ?? '').replace(/\s+/g, ' ').trim().slice(0, 120);
+        out.project_label = l || null;
+        if (l) out.project_id = null;
+        break;
+      }
       case 'project_id':
         if (v && !get('SELECT id FROM projects WHERE id = ?', Number(v))) throw bad('Проєкт не знайдено');
-        out.project_id = v ? Number(v) : null; break;
+        out.project_id = v ? Number(v) : null;
+        if (out.project_id && !('project_label' in body && body.project_label)) out.project_label = null;
+        break;
       case 'due': out.due = validDate(v); break;
       case 'tags': out.tags = JSON.stringify(cleanTags(v)); break;
       case 'blocks': out.blocks = JSON.stringify(cleanBlocks(v)); break;

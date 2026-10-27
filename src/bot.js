@@ -55,13 +55,13 @@ export const webAppKb = (user) => {
   const kb = new Keyboard();
   const url = appUrl(user?.tg_id);
   if (url) kb.webApp('🦍 Бухгалтерія KK', url).row();
+  // мінімум кнопок: решта — у «☰ Ще» або в Mini App
   kb.text('➕ Дохід').text('➖ Витрата').row();
   if (user?.role !== 'viewer') kb.text('📝 Задача').text('✅ Мої задачі').row();
   if (user && can.seeAll(user)) {
-    kb.text('➕ Новий проєкт').text('📋 Проєкти').row();
-    kb.text('💼 Баланс').text('📊 Місяць').row().text('📌 Борги').text('📅 План').row().text('⚡ Шаблони').text('👥 Команда');
+    kb.text('📋 Проєкти').text('📊 Місяць').text('☰ Ще');
   } else {
-    kb.text('👤 Мій кабінет').text('⚡ Шаблони');
+    kb.text('👤 Мій кабінет').text('☰ Ще');
   }
   return kb.resized().persistent();
 };
@@ -270,6 +270,7 @@ if (bot) {
     '➕ Новий проєкт': 'newdeal',
     '📋 Проєкти': 'deals',
     '📝 Задача': 'newtask',
+    '☰ Ще': 'more',
     '✅ Мої задачі': 'mytasks',
   };
 
@@ -285,6 +286,12 @@ if (bot) {
     return quickTask(ctx, u, text);
   });
   bot.command(['tasks', 'mytasks'], (ctx) => needActive(ctx, ctx.kk) && sendMyTasks(ctx, ctx.kk));
+  bot.callbackQuery(/^mn:(\w+)$/, async (ctx) => {
+    const u = ctx.kk;
+    await ctx.answerCallbackQuery().catch(() => {});
+    if (!u || u.status !== 'active') return;
+    await menuAction(ctx, u, ctx.match[1]);
+  });
   bot.callbackQuery(/^tk:as:(\d+)$/, async (ctx) => {
     const u = ctx.kk;
     if (!u || u.status !== 'active' || u.role === 'viewer') return ctx.answerCallbackQuery({ text: 'Немає доступу' });
@@ -482,31 +489,7 @@ if (bot) {
     if (wiz && !textMap[t]) return wizardInput(ctx, wiz, 'text', t);
     if (wiz && textMap[t]) wizards.delete(u.id);
 
-    if (textMap[t] === 'balance') {
-      if (!can.seeAll(u)) return ctx.reply('Немає доступу до загальних балансів.');
-      const b = balances();
-      return ctx.reply(`💼 <b>Рахунки</b>\n\n${b.accounts.map((a) => `${a.emoji} <b>${esc(a.name)}</b> · ${fmt(a.balance, a.currency)}`).join('\n')}\n\nРазом ≈ <b>${fmt(b.total, b.base)}</b>`, { parse_mode: 'HTML' });
-    }
-    if (textMap[t] === 'report') {
-      return ctx.reply(monthCard(dashboard(u)), { parse_mode: 'HTML', reply_markup: appBtn(u) });
-    }
-    if (textMap[t] === 'plan') {
-      if (!can.seeAll(u)) return sendCabinet(ctx);
-      const rows = upcoming(21);
-      if (!rows.length) return ctx.reply('Немає запланованих платежів на 3 тижні.');
-      return ctx.reply(rows.map((x) => `${x.overdue ? '⚠️' : '📅'} ${x.date} · ${x.type === 'income' ? '+' : '−'}${fmt(x.amount, x.currency)} · ${esc(x.comment || x.category_name || '—')}`).join('\n'), { parse_mode: 'HTML' });
-    }
-    if (textMap[t] === 'team') {
-      if (!can.seeAll(u)) return ctx.reply('Немає доступу.');
-      const m = monthOf(today());
-      const [from, to] = [`${m}-01`, today()];
-      const rows = team(from, to);
-      const paid = rows.filter((x) => x.paid_base);
-      return ctx.reply(`👥 <b>Виплати ${m}</b>\n\n` + (paid.map((x) => `• ${esc(x.name)} — ${fmt(x.paid_base, baseCurrency())}`).join('\n') || 'Цього місяця виплат ще не було.'), { parse_mode: 'HTML' });
-    }
-    if (textMap[t] === 'templates') return sendTemplates(ctx);
-    if (textMap[t] === 'debts') return sendDebts(ctx);
-    if (textMap[t] === 'cabinet') return sendCabinet(ctx);
+    if (textMap[t] && await menuAction(ctx, u, textMap[t])) return;
     if (textMap[t] === 'income' || textMap[t] === 'expense') {
       pending.set(u.id, { type: textMap[t] });
       return ctx.reply(`Напиши${textMap[t] === 'income' ? ' дохід' : ' витрату'} як зручно, наприклад:\n<code>${textMap[t] === 'income' ? '500$ від ABV за сайт на ФОП' : '300 грн реклама в інсту'}</code>\nАбо надішли голосове 🎙`, { parse_mode: 'HTML' });
@@ -989,6 +972,48 @@ function monthCard(d) {
   );
 }
 
+/** Дії меню (кнопки клавіатури та «☰ Ще»). Повертає true, якщо щось відповіли. */
+async function menuAction(ctx, u, action) {
+  if (action === 'balance') {
+    if (!can.seeAll(u)) return await ctx.reply('Немає доступу до загальних балансів.');
+    const b = balances();
+    return await ctx.reply(`💼 <b>Рахунки</b>\n\n${b.accounts.map((a) => `${a.emoji} <b>${esc(a.name)}</b> · ${fmt(a.balance, a.currency)}`).join('\n')}\n\nРазом ≈ <b>${fmt(b.total, b.base)}</b>`, { parse_mode: 'HTML' });
+  }
+  if (action === 'report') {
+    return await ctx.reply(monthCard(dashboard(u)), { parse_mode: 'HTML', reply_markup: appBtn(u) });
+  }
+  if (action === 'plan') {
+    if (!can.seeAll(u)) { await sendCabinet(ctx); return true; }
+    const rows = upcoming(21);
+    if (!rows.length) return await ctx.reply('Немає запланованих платежів на 3 тижні.');
+    return await ctx.reply(rows.map((x) => `${x.overdue ? '⚠️' : '📅'} ${x.date} · ${x.type === 'income' ? '+' : '−'}${fmt(x.amount, x.currency)} · ${esc(x.comment || x.category_name || '—')}`).join('\n'), { parse_mode: 'HTML' });
+  }
+  if (action === 'team') {
+    if (!can.seeAll(u)) return await ctx.reply('Немає доступу.');
+    const m = monthOf(today());
+    const [from, to] = [`${m}-01`, today()];
+    const rows = team(from, to);
+    const paid = rows.filter((x) => x.paid_base);
+    return await ctx.reply(`👥 <b>Виплати ${m}</b>\n\n` + (paid.map((x) => `• ${esc(x.name)} — ${fmt(x.paid_base, baseCurrency())}`).join('\n') || 'Цього місяця виплат ще не було.'), { parse_mode: 'HTML' });
+  }
+  if (action === 'templates') { await sendTemplates(ctx); return true; }
+  if (action === 'debts') { await sendDebts(ctx); return true; }
+  if (action === 'cabinet') { await sendCabinet(ctx); return true; }
+  if (action === 'newdeal') { await startDealWizard(ctx); return true; }
+  if (action === 'deals') { await sendDeals(ctx); return true; }
+  if (action === 'more') {
+    const all = can.seeAll(u);
+    const kb = new InlineKeyboard();
+    const items = all
+      ? [['💼 Баланс', 'balance'], ['📅 План', 'plan'], ['📌 Борги', 'debts'], ['👥 Команда', 'team'], ['⚡ Шаблони', 'templates'], ['➕ Новий проєкт', 'newdeal']]
+      : [['👤 Мій кабінет', 'cabinet'], ['⚡ Шаблони', 'templates']];
+    items.forEach(([l, k], i) => { kb.text(l, `mn:${k}`); if (i % 2) kb.row(); });
+    await ctx.reply('☰ Ще', { reply_markup: kb });
+    return true;
+  }
+  return false;
+}
+
 /* ───────── задачі ───────── */
 const pendingTask = new Map();
 const assignWait = new Map(); // хто зараз обирає відповідального → id задачі
@@ -1043,9 +1068,7 @@ function taskKb(p, viewer = null) {
     kb.text('✅ Готово', `tk:done:${p.id}`);
     if (p.status !== 'doing') kb.text('▶️ В роботу', `tk:doing:${p.id}`);
     else kb.text('👀 На перевірку', `tk:review:${p.id}`);
-    kb.row().text('📅 На завтра', `tk:tmr:${p.id}`);
-    if (!p.assignee_id && canBeAssignee(viewer?.id)) kb.text('🙋 Беру', `tk:me:${p.id}`);
-    if (viewer?.status === 'active' && viewer.role !== 'viewer') kb.text(p.assignee_id ? '👤 Змінити' : '👤 Призначити', `tk:as:${p.id}`);
+    if (viewer?.status === 'active' && viewer.role !== 'viewer') kb.row().text(p.assignee_id ? '👤 Змінити' : '👤 Призначити', `tk:as:${p.id}`);
   } else {
     kb.text('↩️ Повернути в роботу', `tk:doing:${p.id}`);
   }
@@ -1116,27 +1139,14 @@ export async function startBot() {
   const setup = async () => {
     const me = await bot.api.getMe();
     setSetting('bot_username', me.username);
+    // у меню команд — лише головне; решта команд працює, але не захаращує список
     await bot.api.setMyCommands([
-      { command: 'start', description: 'Відкрити бухгалтерію' },
-      { command: 'app', description: 'Mini App' },
-      { command: 'invite', description: 'Запросити людей / адмінів' },
-      { command: 'balance', description: 'Баланси рахунків' },
-      { command: 'report', description: 'Звіт за місяць' },
-      { command: 'pending', description: 'Операції на перевірці' },
-      { command: 'task', description: 'Нова задача: /task текст @нік завтра !' },
+      { command: 'app', description: 'Відкрити Mini App' },
+      { command: 'task', description: 'Нова задача' },
       { command: 'tasks', description: 'Мої задачі' },
-      { command: 'deal', description: 'Новий проєкт (як у таблиці)' },
-      { command: 'deals', description: 'Проєкти в роботі' },
-      { command: 'summary', description: 'Підсумки маржі по місяцях' },
-      { command: 'debts', description: 'Борги клієнтів' },
-      { command: 'forecast', description: 'Прогноз каси на 4 тижні' },
-      { command: 'taxes', description: 'Податки ФОП' },
-      { command: 'payouts', description: 'Виплати команді' },
-      { command: 'my', description: 'Мій кабінет' },
-      { command: 'templates', description: 'Шаблони операцій' },
-      { command: 'week', description: 'Звіт за тиждень' },
-      { command: 'compare', description: 'Порівняння з минулим місяцем і роком' },
-      { command: 'backup', description: 'Резервна копія бази' },
+      { command: 'deal', description: 'Новий проєкт' },
+      { command: 'report', description: 'Звіт за місяць' },
+      { command: 'invite', description: 'Запросити людей' },
     ]);
     const url = appUrl();
     if (url) {

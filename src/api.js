@@ -18,7 +18,7 @@ import { createDocument, listDocuments, renderDocument, requisites, saveRequisit
 import { linkMonoAccount, makeBackup, monoAccounts, monoEnabled, setMonoWebhook, syncMono } from './services/integrations.js';
 import { aiEnabled } from './services/ai.js';
 import {
-  COVERS, PAGE_TEMPLATES, assignable, taskInviteLink, PRIORITIES, STATUSES, addComment, createPage, deleteComment, duplicatePage, getPage, listPages,
+  COVERS, PAGE_TEMPLATES, assignable, projectLabels, taskInviteLink, PRIORITIES, STATUSES, addComment, createPage, deleteComment, duplicatePage, getPage, listPages,
   purgePage, restorePage, tagList, trashPage, updatePage,
 } from './services/tasks.js';
 import { METHODS, SECTIONS, dealBalances, deleteDeal, getDeal, importSnapshot, listDeals, monthlySummary, saveDeal } from './services/deals.js';
@@ -565,6 +565,7 @@ api.get('/pages/meta', (req, res) => res.json({
   statuses: STATUSES, priorities: PRIORITIES, covers: COVERS, tags: tagList(), templates: Object.keys(PAGE_TEMPLATES),
   members: assignable(),
   projects: all("SELECT id, name, status, section FROM projects WHERE status != 'cancelled' ORDER BY closed, id DESC LIMIT 300"),
+  project_labels: projectLabels(),
 }));
 api.get('/pages', (req, res) => res.json(listPages(pageQuery(req))));
 api.get('/pages/:id', (req, res) => res.json(getPage(needId(req))));

@@ -43,7 +43,8 @@ await test('/start admin → keyboard with Mini App', async () => {
   const r = lastReply();
   assert.match(r.payload.text, /Ангеліна/);
   const kb = r.payload.reply_markup.keyboard.flat().map((b) => b.text);
-  assert.ok(kb.includes('📌 Борги') && kb.includes('⚡ Шаблони'));
+  assert.ok(kb.includes('☰ Ще') && kb.includes('📝 Задача') && !kb.includes('📌 Борги'));
+  assert.ok(kb.length <= 8, `забагато кнопок: ${kb.length}`);
 });
 
 await test('free text → draft card, nothing saved until ✅', async () => {
@@ -81,10 +82,21 @@ await test('➖ Витрата then text → forced expense draft', async () => 
 });
 
 await test('menu buttons for admin work', async () => {
+  // старі кнопки (у кого ще стара клавіатура) працюють
   for (const b of ['💼 Баланс', '📊 Місяць', '📅 План', '👥 Команда', '📌 Борги', '⚡ Шаблони']) {
     sent.length = 0;
     await text(111, b);
     assert.ok(lastReply(), `no reply for ${b}`);
+  }
+  // «☰ Ще» → меню, кожна кнопка відповідає
+  sent.length = 0;
+  await text(111, '☰ Ще');
+  const items = lastKbData();
+  assert.ok(items.includes('mn:balance') && items.includes('mn:debts'));
+  for (const d of items) {
+    sent.length = 0;
+    await tap(111, d);
+    assert.ok(sent.some((x) => x.method === 'sendMessage'), `no reply for ${d}`);
   }
 });
 
