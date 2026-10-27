@@ -1636,7 +1636,9 @@ setTab = function setTabWithTasks(tab) {
   if (tab === 'new' && state.tab === 'tasks') return newMenu(document.querySelector('.tabs .fab'));
   if (tab !== 'tasks') state.tk.q = '';
   if (tab !== 'new') document.body.classList.toggle('wide', tab === 'tasks');
-  return _setTab(tab);
+  const r = _setTab(tab);
+  if (tab !== 'new') document.getElementById('moreBtn')?.classList.toggle('on', tab === 'more');
+  return r;
 };
 
 // глибокі посилання: ?page=12, ?tab=tasks, t.me/...?startapp=page_12
@@ -1655,5 +1657,6 @@ setTab = function setTabWithTasks(tab) {
   setTimeout(() => clearInterval(wait), 20000);
 })();
 try { tgWebApp()?.disableVerticalSwipes?.(); } catch {}
+document.getElementById('moreBtn')?.addEventListener('click', () => { if (TK.page) closePage(); setTab('more'); });
 fetch('/api/launch').then((r) => r.json()).then((j) => { TK.bot = j.bot; }).catch(() => {});
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushSave(); });

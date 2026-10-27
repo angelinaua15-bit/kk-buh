@@ -11,10 +11,14 @@
 body.wide #app { max-width: 1180px; }
 
 /* нижні вкладки: 6 пунктів з іконками */
-.tabs { grid-template-columns: 1fr 1fr 60px 1fr 1fr 1fr !important; }
-.tabs button { display: grid; justify-items: center; gap: 2px; font-size: 10.5px !important; line-height: 1.1; }
-.tabs button i { font-style: normal; font-size: 17px; line-height: 1; opacity: .85; }
-.tabs .fab { display: block; font-size: 28px !important; }
+.tabs { grid-template-columns: 1fr 1fr 72px 1fr 1fr !important; align-items: center; padding: 6px 6px calc(8px + var(--safe-b)) !important; }
+.tabs button:not(.fab) { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; height: 48px; padding: 0 !important; font-size: 11px !important; line-height: 1.1; white-space: nowrap; border-radius: 12px; }
+.tabs button:not(.fab) i { display: block; height: 22px; opacity: .75; }
+.tabs button:not(.fab) svg { display: block; }
+.tabs button.on { color: var(--text); }
+.tabs button.on i { opacity: 1; }
+.tabs .fab { display: grid !important; place-items: center; justify-self: center; width: 54px; height: 54px; margin: -22px 0 0 !important; padding: 0 0 3px !important; font-size: 30px !important; line-height: 1; box-shadow: 0 8px 24px rgba(123,92,255,.45), 0 0 0 5px var(--bg); }
+#moreBtn.on { background: var(--accent); border-color: transparent; }
 
 /* шапка розділу */
 .tk-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
