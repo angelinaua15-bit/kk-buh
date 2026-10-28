@@ -376,14 +376,22 @@ const TBL_COLS = [
   { id: 'tags', name: 'Теги' },
 ];
 function tblRow(r) {
+  // на вузькому екрані частина колонок ховається — їхні значення показуємо під назвою
+  const sub = [
+    r.project_name ? `<span class="s-project">📁 ${esc(r.project_name)}</span>` : '',
+    r.tags?.length ? `<span class="s-tags">${tagPills(r.tags)}</span>` : '',
+    r.priority ? `<span class="s-priority">${prPill(r.priority)}</span>` : '',
+    r.assignee_name ? `<span class="s-assignee">${avatar(r.assignee_name, 'sm')} ${esc(r.assignee_name)}</span>` : '',
+    r.checklist ? `<span class="s-check">☑ ${r.checklist.done}/${r.checklist.total}</span>` : '',
+  ].join('');
   return `<tr data-id="${r.id}" class="${r.status === 'done' ? 'is-done' : ''}">
-      <td class="c-title" data-page="${r.id}"><span>${r.icon ? esc(r.icon) + ' ' : ''}${esc(r.title || 'Без назви')}</span>${r.checklist ? `<small>☑ ${r.checklist.done}/${r.checklist.total}</small>` : ''}</td>
-      <td data-prop="status">${stPill(r.status)}</td>
-      <td data-prop="assignee_id">${r.assignee_name ? `${avatar(r.assignee_name, 'sm')} ${esc(r.assignee_name)}` : '<span class="ph">—</span>'}</td>
-      <td data-prop="due" class="${r.overdue ? 'late' : ''}">${r.due ? esc(relDate(r.due)) : '<span class="ph">—</span>'}</td>
-      <td data-prop="priority">${prPill(r.priority) || '<span class="ph">—</span>'}</td>
-      <td data-prop="project_id">${r.project_name ? esc(r.project_name) : '<span class="ph">—</span>'}</td>
-      <td data-prop="tags">${tagPills(r.tags) || '<span class="ph">—</span>'}</td>
+      <td class="c-title" data-col="title" data-page="${r.id}"><span class="c-name">${r.icon ? esc(r.icon) + ' ' : ''}${esc(r.title || 'Без назви')}</span>${sub ? `<div class="c-sub">${sub}</div>` : ''}</td>
+      <td data-col="status" data-prop="status">${stPill(r.status)}</td>
+      <td data-col="assignee_id" data-prop="assignee_id">${r.assignee_name ? `${avatar(r.assignee_name, 'sm')} ${esc(r.assignee_name)}` : '<span class="ph">—</span>'}</td>
+      <td data-col="due" data-prop="due" class="${r.overdue ? 'late' : ''}">${r.due ? esc(relDate(r.due)) : '<span class="ph">—</span>'}</td>
+      <td data-col="priority" data-prop="priority">${prPill(r.priority) || '<span class="ph">—</span>'}</td>
+      <td data-col="project_id" data-prop="project_id">${r.project_name ? esc(r.project_name) : '<span class="ph">—</span>'}</td>
+      <td data-col="tags" data-prop="tags">${tagPills(r.tags) || '<span class="ph">—</span>'}</td>
     </tr>`;
 }
 /** Миттєво показуємо зміну локально, а сервер оновлюємо у фоні. */
@@ -412,10 +420,10 @@ function renderTable(box) {
     rows.sort((a, b) => { const x = key(a); const y = key(b); return (x > y ? 1 : x < y ? -1 : 0) * f.dir; });
   }
   box.innerHTML = `<div class="ntbl-wrap"><table class="ntbl">
-    <thead><tr>${TBL_COLS.map((c) => `<th data-tk="sort" data-v="${c.id}">${c.name}${f.sort === c.id ? (f.dir > 0 ? ' ↑' : ' ↓') : ''}</th>`).join('')}</tr></thead>
+    <thead><tr>${TBL_COLS.map((c) => `<th data-tk="sort" data-col="${c.id}" data-v="${c.id}">${c.name}${f.sort === c.id ? (f.dir > 0 ? ' ↑' : ' ↓') : ''}</th>`).join('')}</tr></thead>
     <tbody>${rows.map(tblRow).join('')}
-    ${canWritePages() ? `<tr class="ntbl-add"><td colspan="${TBL_COLS.length}"><input id="tblNew" placeholder="＋ Нова задача — Enter, щоб додати"></td></tr>` : ''}
     </tbody></table></div>
+    ${canWritePages() ? `<input class="ntbl-new" id="tblNew" placeholder="＋ Нова задача — Enter, щоб додати" enterkeyhint="done">` : ''}
     <p class="muted tk-count">${rows.length} ${plural(rows.length, 'задача', 'задачі', 'задач')}</p>`;
   const inp = $('tblNew');
   if (inp) inp.onkeydown = (e) => {

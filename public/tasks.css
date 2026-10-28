@@ -321,3 +321,33 @@ body.pg-open { overflow: hidden; }
   .pg-kbar { backdrop-filter: none; }
   .pk, .pk-wrap { animation: none !important; }
 }
+
+/* таблиця підлаштовується під ширину: без горизонтального гортання */
+.ntbl-wrap { container-type: inline-size; overflow-x: auto; margin: 0; padding: 0; contain: none; }
+.ntbl { min-width: 0 !important; width: 100%; table-layout: auto; }
+.ntbl td, .ntbl th { max-width: none; }
+.ntbl .c-title { position: static !important; min-width: 0; max-width: none; width: 42%; white-space: normal; }
+.ntbl th:first-child { position: static !important; }
+.ntbl .c-name { display: -webkit-box !important; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; white-space: normal; overflow-wrap: anywhere; line-height: 1.35; }
+.ntbl .c-sub { display: none; flex-wrap: wrap; gap: 4px 8px; align-items: center; margin-top: 4px; font-size: 12px; font-weight: 400; color: var(--muted); }
+.ntbl .c-sub > span { display: none; align-items: center; gap: 4px; }
+.ntbl .c-sub .pill { font-size: 11px; padding: 1px 6px; }
+.ntbl-new { display: block; width: 100%; margin-top: 2px; border: 0; border-bottom: 1px solid var(--line); background: none; padding: 11px 10px; color: var(--text); outline: none; font-size: 14px; }
+.ntbl-new::placeholder { color: var(--muted); }
+.ntbl-new:focus { background: var(--hover); }
+@container (max-width: 900px) {
+  .ntbl [data-col=project_id], .ntbl [data-col=tags] { display: none; }
+  .ntbl .c-sub { display: flex; }
+  .ntbl .c-sub .s-project, .ntbl .c-sub .s-tags, .ntbl .c-sub .s-check { display: inline-flex; }
+}
+@container (max-width: 620px) {
+  .ntbl [data-col=assignee_id], .ntbl [data-col=priority] { display: none; }
+  .ntbl .c-sub .s-priority, .ntbl .c-sub .s-assignee { display: inline-flex; }
+  .ntbl td, .ntbl th { padding: 8px 6px; }
+  .ntbl .c-title { width: auto; }
+  .ntbl td[data-col=status] .pill { font-size: 11px; padding: 2px 6px; }
+}
+@container (max-width: 360px) {
+  .ntbl td[data-col=status] .pill { max-width: 92px; overflow: hidden; text-overflow: ellipsis; }
+}
+.ntbl .c-sub .av, .ntbl td .av.sm { vertical-align: middle; }
