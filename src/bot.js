@@ -1007,7 +1007,7 @@ async function menuAction(ctx, u, action) {
     const items = all
       ? [['💼 Баланс', 'balance'], ['📅 План', 'plan'], ['📌 Борги', 'debts'], ['👥 Команда', 'team'], ['⚡ Шаблони', 'templates'], ['➕ Новий проєкт', 'newdeal']]
       : [['👤 Мій кабінет', 'cabinet'], ['⚡ Шаблони', 'templates']];
-    items.forEach(([l, k], i) => { kb.text(l, `mn:${k}`); if (i % 2) kb.row(); });
+    items.forEach(([l, k], i) => { kb.text(l, `mn:${k}`); if (i % 2 && i < items.length - 1) kb.row(); });
     await ctx.reply('☰ Ще', { reply_markup: kb });
     return true;
   }
@@ -1025,7 +1025,7 @@ async function askAssignee(ctx, u, pageId) {
   const kb = new InlineKeyboard();
   people.forEach((p, i) => {
     kb.text(`${p.id === page.assignee_id ? '● ' : ''}${p.id === u.id ? '🙋 Я' : p.name}`.slice(0, 30), `tk:set:${pageId}:${p.id}`);
-    if (i % 2 === 1) kb.row();
+    if (i % 2 === 1 && i < people.length - 1) kb.row();
   });
   return ctx.reply(
     `👤 Кого призначити на «${esc(page.title || 'Без назви')}»?\n\n`
