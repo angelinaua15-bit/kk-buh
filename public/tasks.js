@@ -107,6 +107,8 @@ function cleanInline(html) {
     });
   };
   walk(tpl.content);
+  // порожні теги (напр. <a></a>, що лишаються після розрізання рядка) — прибираємо
+  tpl.content.querySelectorAll('b,strong,i,em,u,s,strike,code,a,mark').forEach((n) => { if (!n.textContent) n.remove(); });
   return tpl.innerHTML.replace(/(<br>)+$/, '');
 }
 const textOf = (html) => { const d = document.createElement('div'); d.innerHTML = html || ''; return d.textContent.replace(/ /g, ' '); };
@@ -1078,9 +1080,15 @@ function applySlash(type) {
   const b = TK.page.blocks[blockIndex(id)];
   hideSlash();
   if (!el || !b) return;
-  // прибираємо «/запит» з тексту
-  const txt = el.innerHTML.replace(/\/[^/<>\s]*(\s|&nbsp;)?$/, '').replace(/\/([\p{L}\d]*)(?=<\/[a-z]+>$)/u, '');
-  b.text = cleanInline(txt);
+  // прибираємо «/запит» з тексту: останній «/» в останньому текстовому вузлі, де він є
+  const tmp = document.createElement('div');
+  tmp.innerHTML = el.innerHTML;
+  const nodes = [];
+  const w = document.createTreeWalker(tmp, NodeFilter.SHOW_TEXT);
+  for (let n = w.nextNode(); n; n = w.nextNode()) nodes.push(n);
+  const hit = nodes.reverse().find((n) => n.textContent.includes('/'));
+  if (hit) hit.textContent = hit.textContent.slice(0, hit.textContent.lastIndexOf('/')).replace(/[\s\u00a0]+$/, '');
+  b.text = cleanInline(tmp.innerHTML);
   if (type === 'page') return createChildPage(id);
   if (!textOf(b.text).trim() || b.type === 'p') return setType(id, type);
   // у непорожньому блоці (не абзаці) — новий блок нижче
