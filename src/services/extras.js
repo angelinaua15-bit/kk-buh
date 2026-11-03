@@ -360,7 +360,7 @@ export function payouts({ userId = null } = {}) {
   const rows = all(
     `SELECT pm.*, u.name AS user_name, p.name AS project_name, p.currency AS project_currency, p.status AS project_status
      FROM project_members pm JOIN users u ON u.id = pm.user_id JOIN projects p ON p.id = pm.project_id
-     ${userId ? 'WHERE pm.user_id = ?' : ''} ORDER BY u.name, p.name`,
+     WHERE p.status NOT IN ('archived','cancelled') ${userId ? 'AND pm.user_id = ?' : ''} ORDER BY u.name, p.name`,
     ...(userId ? [userId] : []),
   );
   const people = new Map();

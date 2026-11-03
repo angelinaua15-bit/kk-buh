@@ -134,8 +134,39 @@ try {
   console.error('deals snapshot import failed', e);
 }
 
+// Одноразово: облік з 1 листопада 2026 «з чистого листа» (старе — в архів, не видаляється; відкат — Налаштування).
+let freshBackup = null;
+try {
+  const { getSetting, setSetting } = await import('./db.js');
+  if (!config.devMode && !getSetting('fresh_auto_2026_11') && !getSetting('ledger_start')) {
+    const { makeBackup } = await import('./services/integrations.js');
+    freshBackup = makeBackup();
+    const { freshStart } = await import('./services/fresh.js');
+    const r = freshStart('2026-11-01', null);
+    setSetting('fresh_auto_2026_11', new Date().toISOString());
+    freshBackup.result = r;
+    console.log('Fresh start from 2026-11-01', r);
+  } else if (!getSetting('fresh_auto_2026_11')) {
+    setSetting('fresh_auto_2026_11', 'skipped');
+  }
+} catch (e) {
+  console.error('fresh start failed', e);
+}
+
 app.listen(config.port, config.host, () => {
   console.log(`KK-Buh http://${config.host}:${config.port}${config.devMode ? ' (dev)' : ''}${config.webAppUrl ? ` → ${config.webAppUrl}` : ''}`);
-  startBot().catch((e) => console.error('bot start failed', e));
+  startBot().then(() => {
+    if (!freshBackup) return;
+    setTimeout(async () => {
+      const { all } = await import('./db.js');
+      const { sendFile } = await import('./bot.js');
+      const r = freshBackup.result;
+      const text = `🧹 Облік почато з чистого листа з 1 листопада 2026.\nВ архів: ${r.transactions} операцій і ${r.projects} проєктів, рахунки з нуля. Нічого не видалено — повернути можна в Mini App: ☰ → Налаштування.\nУ файлі — копія бази до змін.`;
+      for (const a of all("SELECT tg_id FROM users WHERE role='admin' AND status='active' AND tg_id IS NOT NULL")) {
+        await sendFile(a.tg_id, freshBackup.buffer, freshBackup.filename, text).catch(() => {});
+      }
+      freshBackup = null;
+    }, 8000);
+  }).catch((e) => console.error('bot start failed', e));
   scheduleJobs();
 });
