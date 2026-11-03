@@ -150,7 +150,7 @@ export function parseOperation(text, { forcedType } = {}) {
   if (!currency && account) currency = account.currency;
 
   const clients = all('SELECT id, name FROM clients WHERE archived = 0');
-  const projects = all("SELECT id, name, client_id FROM projects WHERE status NOT IN ('cancelled')");
+  const projects = all("SELECT id, name, client_id FROM projects WHERE status NOT IN ('cancelled','archived')");
   const members = all("SELECT id, name, username FROM users WHERE status = 'active'");
 
   const project = bestMatch(raw, projects);

@@ -409,6 +409,8 @@ export function projects(f = {}) {
   if (f.status) {
     where.push('pr.status = ?');
     p.push(f.status);
+  } else {
+    where.push("pr.status != 'archived'");
   }
   if (f.client_id) {
     where.push('pr.client_id = ?');

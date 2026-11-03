@@ -177,7 +177,7 @@ export function upsertRow(sheet, cols, values) {
       executor_paid: /^(так|yes|true|1|✅|виплач)/i.test(String(r['Виконавцю виплачено'] ?? '').trim()),
     };
     const exists = id && getDeal(id);
-    const d = saveDeal(input, SYSTEM, { id: exists ? id : null });
+    const d = saveDeal(input, SYSTEM, { id: exists ? id : null, archiveOld: true });
     return dealRow(d);
   }
   if (sheet === 'projects') {

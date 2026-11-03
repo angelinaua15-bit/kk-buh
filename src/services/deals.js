@@ -1,3 +1,4 @@
+import { archiveProject, isBeforeStart } from './fresh.js';
 /**
  * Угоди — точна копія логіки таблиці «KING KONG LAB ПРОЄКТИ».
  *
@@ -259,7 +260,7 @@ function writeDealTransactions(projectId, d, calc, memberId, clientId, user) {
 }
 
 /** Створити або оновити угоду. key — стабільний ключ для дедуплікації (імпорт таблиці). */
-export function saveDeal(input, user, { id = null, key = null, year } = {}) {
+export function saveDeal(input, user, { id = null, key = null, year, archiveOld = false } = {}) {
   const d = normalizeDeal(input, { year });
   const calc = calcDeal(d);
   return tx(() => {
@@ -269,6 +270,7 @@ export function saveDeal(input, user, { id = null, key = null, year } = {}) {
     const notes = [d.extra, d.note].filter(Boolean).join(' · ') || null;
     let pid = id;
     if (!pid && key) pid = get('SELECT id FROM projects WHERE deal_key = ?', key)?.id || null;
+    const prevStatus = pid ? get('SELECT status FROM projects WHERE id = ?', pid)?.status : null;
     const fields = [
       d.task, clientId, status, d.price, d.price_currency, d.start_date, d.end_date, notes, d.type || null, d.method || null,
       d.section, memberId, d.margin, d.margin_currency, d.prepay, d.prepay_currency, d.prog_prepay, d.prog_currency, d.extra, d.closed ? 1 : 0,
@@ -290,6 +292,8 @@ export function saveDeal(input, user, { id = null, key = null, year } = {}) {
       run("INSERT INTO project_members(project_id, user_id, kind, value, role) VALUES(?,?, 'fixed', ?, 'виконавець')", pid, memberId, calc.executor_total);
     }
     writeDealTransactions(pid, d, calc, memberId, clientId, user || { id: null, role: 'admin' });
+    // після «чистого листа»: архівний проєкт лишається в архіві, а старий рядок таблиці одразу йде туди ж
+    if (prevStatus === 'archived' || (archiveOld && !prevStatus && isBeforeStart(d.start_date))) archiveProject(pid);
     return getDeal(pid);
   });
 }
@@ -348,7 +352,7 @@ export function getDeal(id) {
 }
 
 export function listDeals({ section, status, q } = {}) {
-  const where = ["p.section IS NOT NULL", "p.status != 'cancelled'"];
+  const where = ["p.section IS NOT NULL", "p.status NOT IN ('cancelled','archived')"];
   const params = [];
   if (section) { where.push('p.section = ?'); params.push(section); }
   if (status === 'open') where.push('p.closed = 0');
@@ -423,7 +427,7 @@ export function importSnapshot(snapshot, user = { id: null, role: 'admin' }) {
       const key = dealKey(section, row, snapshot.year);
       const existed = Boolean(get('SELECT id FROM projects WHERE deal_key = ?', key));
       try {
-        saveDeal({ ...row, section }, user, { key, year: snapshot.year });
+        saveDeal({ ...row, section }, user, { key, year: snapshot.year, archiveOld: true });
         existed ? updated++ : created++;
       } catch (e) {
         errors.push(`${section} №${row.n}: ${e.message}`);

@@ -693,8 +693,43 @@ async function renderSettings() {
     <button class="btn">Зберегти</button>
     <button type="button" class="btn ghost" id="nbu">Оновити курси НБУ</button>
     <button type="button" class="btn ghost" id="backupBtn">💾 Бекап бази в чат</button>
-    <p class="muted">Бекап також приходить адмінам щодня о 23:30, тижневий звіт — у пʼятницю о 18:00.</p>
-  </form>`;
+    <p class="muted">Тижневий звіт приходить у пʼятницю о 18:00.</p>
+  </form>
+  <div class="card" id="freshCard"><div class="muted">Завантаження…</div></div>`;
+  renderFresh();
+}
+
+const MONTHS_GEN = ['січня', 'лютого', 'березня', 'квітня', 'травня', 'червня', 'липня', 'серпня', 'вересня', 'жовтня', 'листопада', 'грудня'];
+const pl = (n, one, few, many) => { const a = n % 10, b = n % 100; return `${n} ${a === 1 && b !== 11 ? one : a >= 2 && a <= 4 && (b < 12 || b > 14) ? few : many}`; };
+const humanDate = (iso) => `${Number(iso.slice(8, 10))} ${MONTHS_GEN[Number(iso.slice(5, 7)) - 1]} ${iso.slice(0, 4)}`;
+async function renderFresh() {
+  const box = $('freshCard');
+  if (!box) return;
+  const f = await api('/fresh');
+  if (f.start) {
+    box.innerHTML = `<h3 style="margin:0 0 8px">🧹 Облік з ${humanDate(f.start)}</h3>
+      <p class="muted">Старе в архіві: ${pl(f.archived_tx, 'операція', 'операції', 'операцій')}, ${pl(f.archived_projects, 'проєкт', 'проєкти', 'проєктів')}. У звітах, балансах і списках їх не видно, але нічого не видалено. Задачі не чіпали.</p>
+      <button type="button" class="btn ghost" id="freshUndo">↩️ Повернути старі дані</button>`;
+    $('freshUndo').onclick = () => safe(async () => {
+      if (!(await ask('Повернути всі старі операції й проєкти і стартові залишки рахунків?'))) return;
+      const r = await api('/fresh/undo', { method: 'POST', body: {} });
+      toast(`Повернуто: ${pl(r.transactions, 'операція', 'операції', 'операцій')}, ${pl(r.projects, 'проєкт', 'проєкти', 'проєктів')}`);
+      state.boot = await api('/bootstrap'); renderFresh();
+    });
+    return;
+  }
+  box.innerHTML = `<h3 style="margin:0 0 8px">🧹 Почати з чистого листа</h3>
+    <p class="muted">Усе до обраної дати піде в архів: операції, проєкти й борги зникнуть зі звітів і балансів, рахунки стартують з нуля. Нічого не видаляється — можна повернути. Задачі й сторінки лишаються. Перед цим бот надішле тобі копію бази.</p>
+    <label class="form" style="margin:10px 0"><span class="muted">Облік з дати</span><input type="date" id="freshDate" value="${f.suggest}" max="${today()}"></label>
+    <button type="button" class="btn" id="freshGo">Почати з ${humanDate(f.suggest)}</button>`;
+  $('freshDate').oninput = (e) => { if (e.target.value) $('freshGo').textContent = `Почати з ${humanDate(e.target.value)}`; };
+  $('freshGo').onclick = () => safe(async () => {
+    const date = $('freshDate').value;
+    if (!(await ask(`Сховати в архів усе до ${humanDate(date)} і почати рахунки з нуля?`))) return;
+    const r = await api('/fresh', { method: 'POST', body: { date } });
+    toast(`Готово: в архіві ${pl(r.transactions, 'операція', 'операції', 'операцій')} і ${pl(r.projects, 'проєкт', 'проєкти', 'проєктів')}`);
+    state.boot = await api('/bootstrap'); renderFresh();
+  });
 }
 
 async function renderAudit() {

@@ -21,6 +21,7 @@ import {
   COVERS, PAGE_TEMPLATES, assignable, projectLabels, taskInviteLink, PRIORITIES, STATUSES, addComment, createPage, deleteComment, duplicatePage, getPage, listPages,
   purgePage, restorePage, tagList, trashPage, updatePage,
 } from './services/tasks.js';
+import { freshStart, freshState, undoFreshStart } from './services/fresh.js';
 import { METHODS, SECTIONS, dealBalances, deleteDeal, getDeal, importSnapshot, listDeals, monthlySummary, saveDeal } from './services/deals.js';
 
 const api = Router();
@@ -76,7 +77,7 @@ api.get('/me', (req, res) => {
       member_sees_all: getSetting('member_sees_all') === '1',
       member_needs_approval: getSetting('member_needs_approval') === '1',
     },
-    features: { ai: aiEnabled(), mono: monoEnabled(), sheet: Boolean(config.syncToken), persistent: config.persistent },
+    features: { ai: aiEnabled(), mono: monoEnabled(), sheet: Boolean(config.syncToken), persistent: config.persistent, ledger_start: getSetting('ledger_start') || null },
   });
 });
 
@@ -85,7 +86,7 @@ api.get('/bootstrap', (req, res) => {
     accounts: all('SELECT * FROM accounts ORDER BY archived, sort, id'),
     categories: all('SELECT * FROM categories ORDER BY kind, archived, sort, id'),
     clients: all('SELECT * FROM clients WHERE archived = 0 ORDER BY name'),
-    projects: all("SELECT id, name, client_id, status, budget, currency FROM projects WHERE status != 'cancelled' ORDER BY status='active' DESC, name"),
+    projects: all("SELECT id, name, client_id, status, budget, currency FROM projects WHERE status NOT IN ('cancelled','archived') ORDER BY status='active' DESC, name"),
     members: all("SELECT id, name, role, position FROM users WHERE status = 'active' ORDER BY name"),
     rates: currencies(),
     base: baseCurrency(),
@@ -520,6 +521,14 @@ api.post('/mono/webhook', guard(can.manageSettings), async (req, res) => {
   if (!config.webAppUrl) throw new HttpError(400, 'Немає публічної адреси (WEBAPP_URL)');
   res.json({ url: await setMonoWebhook(config.webAppUrl) });
 });
+/* «Чистий лист»: усе до дати старту — в архів (не видаляється), рахунки з нуля */
+api.get('/fresh', guard(can.manageSettings), (req, res) => res.json(freshState()));
+api.post('/fresh', guard(can.manageSettings), async (req, res) => {
+  // перед змінами — резервна копія бази адміну в чат (якщо бот доступний)
+  try { const { buffer, filename } = makeBackup(); await sendToChat(req.user, buffer, filename, '💾 Копія бази перед «чистим листом»'); } catch (e) { console.warn('fresh backup', e.message || e); }
+  res.json({ ...freshStart(req.body?.date, req.user), state: freshState() });
+});
+api.post('/fresh/undo', guard(can.manageSettings), (req, res) => res.json({ ...undoFreshStart(req.user), state: freshState() }));
 api.post('/backup', guard(can.manageSettings), async (req, res) => {
   const { buffer, filename } = makeBackup();
   await sendToChat(req.user, buffer, filename, '💾 Резервна копія бази');
@@ -565,7 +574,7 @@ function notifyPage(kind, page, actor, extra = {}) {
 api.get('/pages/meta', (req, res) => res.json({
   statuses: STATUSES, priorities: PRIORITIES, covers: COVERS, tags: tagList(), templates: Object.keys(PAGE_TEMPLATES),
   members: assignable(),
-  projects: all("SELECT id, name, status, section FROM projects WHERE status != 'cancelled' ORDER BY closed, id DESC LIMIT 300"),
+  projects: all("SELECT id, name, status, section FROM projects WHERE status NOT IN ('cancelled','archived') ORDER BY closed, id DESC LIMIT 300"),
   project_labels: projectLabels(),
 }));
 api.get('/pages', (req, res) => res.json(listPages(pageQuery(req))));

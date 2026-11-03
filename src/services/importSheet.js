@@ -170,7 +170,7 @@ export function importKkProjects(wb, actor = { id: null, role: 'admin' }) {
         const key = dealKey(section, row, year);
         const existed = Boolean(get('SELECT id FROM projects WHERE deal_key = ?', key));
         try {
-          saveDeal({ ...row, section }, actor, { key, year });
+          saveDeal({ ...row, section }, actor, { key, year, archiveOld: true });
           existed ? updated++ : created++;
           sheetDeals++;
         } catch (e) {
