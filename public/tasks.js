@@ -1727,3 +1727,117 @@ try { tgWebApp()?.disableVerticalSwipes?.(); } catch {}
 document.getElementById('moreBtn')?.addEventListener('click', () => { if (TK.page) closePage(); setTab('more'); });
 fetch('/api/launch').then((r) => r.json()).then((j) => { TK.bot = j.bot; }).catch(() => {});
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushSave(); });
+
+/* ═══════════════ Простий режим: лише таблиця, запис одразу ═══════════════ */
+function sortSimple(rows) {
+  const open = rows.filter((r) => r.status !== 'done')
+    .sort((a, b) => (a.due || '9999').localeCompare(b.due || '9999') || b.id - a.id);
+  const done = rows.filter((r) => r.status === 'done').sort((a, b) => (b.done_at || '').localeCompare(a.done_at || ''));
+  return { open, done };
+}
+function simpleRow(r) {
+  const done = r.status === 'done';
+  return `<div class="st-row ${done ? 'is-done' : ''}" data-id="${r.id}">
+    <button class="st-chk ${done ? 'on' : ''}" data-st-act="done" aria-label="Готово">${done ? '✓' : ''}</button>
+    <input class="st-title" data-st-act="title" value="${esc(r.title)}" placeholder="Без назви" ${canWritePages() ? '' : 'readonly'} enterkeyhint="done">
+    <button class="st-cell st-status" data-st-prop="status">${stPill(r.status)}</button>
+    <button class="st-cell st-who" data-st-prop="assignee_id">${r.assignee_name ? `${avatar(r.assignee_name, 'sm')}<span>${esc(r.assignee_name.split(' ')[0])}</span>` : '<span class="ph">👤</span>'}</button>
+    <button class="st-cell st-due ${r.overdue ? 'late' : ''}" data-st-prop="due">${r.due ? esc(relDate(r.due)) : '<span class="ph">📅</span>'}</button>
+    <button class="st-open" data-page="${r.id}" aria-label="Відкрити">›</button>
+  </div>`;
+}
+async function renderSimple() {
+  await tkMeta();
+  const f = state.tk;
+  f.view = 'table';
+  view().innerHTML = `<div class="tk-head"><h1>Задачі</h1>
+      <div class="tk-seg">${[['all', 'Усі'], ['me', 'Мої']].map(([id, l]) => `<button class="${f.who === id ? 'on' : ''}" data-st-who="${id}">${l}</button>`).join('')}</div>
+    </div>
+    ${canWritePages() ? `<form class="st-add" id="stAdd"><input id="stNew" placeholder="＋ Що треба зробити… (@нік, завтра, !)" autocomplete="off" enterkeyhint="send"><button class="st-add-btn" aria-label="Додати">＋</button></form>` : ''}
+    <div class="st-head"><span></span><span>Задача</span><span>Статус</span><span>Хто</span><span>Коли</span><span></span></div>
+    <div id="stList" class="st-list"><div class="muted" style="padding:16px">Завантаження…</div></div>`;
+  await drawSimple();
+  const form = $('stAdd');
+  if (form) form.onsubmit = (e) => {
+    e.preventDefault();
+    const inp = $('stNew');
+    const text = inp.value.trim();
+    if (!text) return inp.focus();
+    inp.value = '';
+    inp.focus();
+    const body = { kind: 'task', status: 'todo', ...parseQuick(text) };
+    if (f.who === 'me' && iCanBeAssignee()) body.assignee_id ??= state.me.user.id;
+    // одразу показуємо рядок, сервер — у фоні
+    const temp = { id: -Date.now(), title: body.title, status: 'todo', due: body.due || null, assignee_id: body.assignee_id || null, assignee_name: TK.meta.members.find((m) => m.id === body.assignee_id)?.name || null };
+    TK.rows.unshift(temp);
+    drawSimple(false);
+    api('/pages', { method: 'POST', body }).then((p) => { Object.assign(temp, p); drawSimple(false); }).catch((err) => { toast(err.message); TK.rows = TK.rows.filter((x) => x !== temp); drawSimple(false); });
+  };
+}
+async function drawSimple(load = true) {
+  const box = $('stList');
+  if (!box) return;
+  if (load) await tkLoad();
+  const { open, done } = sortSimple(TK.rows);
+  const showDone = state.tk.showDone;
+  box.innerHTML = (open.map(simpleRow).join('') || `<div class="tk-empty"><div>✨</div><b>Задач немає</b><p>Впиши першу в рядок угорі й натисни Enter.</p></div>`)
+    + (done.length ? `<button class="st-done-toggle" data-st-act="toggle-done">${showDone ? '▾' : '▸'} Готово · ${done.length}</button>${showDone ? done.map(simpleRow).join('') : ''}` : '');
+}
+async function patchSimple(row, patch) {
+  const before = { ...row };
+  applyLocal(row, patch);
+  drawSimple(false);
+  if (row.id < 0) return;
+  try {
+    const upd = await api('/pages/' + row.id, { method: 'PATCH', body: patch });
+    Object.assign(row, upd);
+    if (upd.assignee_invite) showInvite(upd);
+  } catch (err) {
+    toast(err.message);
+    Object.assign(row, before);
+    drawSimple(false);
+  }
+}
+document.addEventListener('click', (e) => {
+  if (state.tab !== 'tasks' || !document.getElementById('stList') || e.target.closest('#pageView, .pk-wrap')) return;
+  const who = e.target.closest('[data-st-who]');
+  if (who) { state.tk.who = who.dataset.stWho; tkRemember(); return renderSimple(); }
+  if (e.target.closest('[data-st-act="toggle-done"]')) { state.tk.showDone = !state.tk.showDone; return drawSimple(false); }
+  const rowEl = e.target.closest('.st-row');
+  if (!rowEl) return;
+  const row = TK.rows.find((r) => String(r.id) === rowEl.dataset.id);
+  if (!row || !canWritePages()) return;
+  if (e.target.closest('[data-st-act="done"]')) {
+    const status = row.status === 'done' ? 'todo' : 'done';
+    if (status === 'done') { confettiAt(rowEl); try { tgWebApp()?.HapticFeedback?.notificationOccurred('success'); } catch {} }
+    return patchSimple(row, { status });
+  }
+  const cell = e.target.closest('[data-st-prop]');
+  if (cell) return propPicker(cell.dataset.stProp, row, cell, (patch) => patchSimple(row, patch));
+});
+const saveTitle = (inp) => {
+  const row = TK.rows.find((r) => String(r.id) === inp.closest('.st-row')?.dataset.id);
+  const v = inp.value.replace(/\s+/g, ' ').trim();
+  if (!row || v === (row.title || '') || row.id < 0) return;
+  row.title = v;
+  api('/pages/' + row.id, { method: 'PATCH', body: { title: v } }).catch((err) => toast(err.message));
+};
+document.addEventListener('keydown', (e) => {
+  const inp = e.target.closest?.('.st-title');
+  if (inp && e.key === 'Enter') { e.preventDefault(); inp.blur(); }
+});
+document.addEventListener('focusout', (e) => { if (e.target.classList?.contains('st-title')) saveTitle(e.target); });
+
+// вкладка «Задачі» — одразу проста таблиця; «+» по центру — фокус у рядок запису
+screens.tasks = renderSimple;
+const _setTabSimple = setTab;
+setTab = function setTabSimple(tab) {
+  if (tab === 'new' && state.tab === 'tasks') { const i = $('stNew'); if (i) { i.focus(); i.scrollIntoView({ block: 'center' }); } return; }
+  return _setTabSimple(tab);
+};
+// після закриття сторінки задачі — оновлюємо таблицю
+const _closePageSimple = closePage;
+closePage = async function closePageSimple() {
+  await _closePageSimple();
+  if (state.tab === 'tasks' && $('stList')) drawSimple();
+};
