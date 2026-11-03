@@ -462,8 +462,11 @@ export function parseTaskText(text, now = today()) {
   const out = { tags: [] };
   t = t.replace(/\s#([\p{L}\d_-]{1,30})/gu, (_m, tag) => { out.tags.push(tag); return ' '; });
   t = t.replace(/\s(!{1,3})(?=\s)/g, (_m, ex) => { out.priority = ex.length >= 2 ? 'urgent' : 'high'; return ' '; });
-  t = t.replace(/\s@([\w\d_]{2,32})/g, (m, uname) => {
-    const u = get(`SELECT id FROM users WHERE ${ASSIGNABLE_SQL} AND (lower(username) = lower(?) OR lower(name) = lower(?) OR lower(name) LIKE lower(?))`, uname, uname, `${uname} %`);
+  // @нік або @Імʼя (кирилиця теж); SQLite lower() не знає кирилиці — порівнюємо в JS
+  const people = assignable();
+  t = t.replace(/\s@([\p{L}\d_]{2,32})/gu, (m, uname) => {
+    const q = uname.toLowerCase();
+    const u = people.find((x) => (x.username || '').toLowerCase() === q || x.name.toLowerCase() === q || x.name.toLowerCase().startsWith(`${q} `));
     if (u) { out.assignee_id = u.id; return ' '; }
     return m;
   });

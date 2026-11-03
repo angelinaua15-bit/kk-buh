@@ -386,3 +386,6 @@ body.pg-open { overflow: hidden; }
   .st-status .pill { font-size: 11px; padding: 1px 6px; }
 }
 .st-status { justify-content: flex-start; }
+
+.mention .slash-it .av { width: 32px; height: 32px; font-size: 12px; }
+.mention { width: 250px; }

@@ -231,7 +231,7 @@ function parseQuick(text) {
   t = t.replace(/\s#([\p{L}\d_-]{1,30})/gu, (_m, g) => { tags.push(g); return ' '; });
   if (tags.length) out.tags = tags;
   t = t.replace(/\s(!{1,3})(?=\s)/g, (_m, ex) => { out.priority = ex.length >= 2 ? 'urgent' : 'high'; return ' '; });
-  t = t.replace(/\s@([\w\d_]{2,32})/g, (m, u) => {
+  t = t.replace(/\s@([\p{L}\d_]{2,32})/gu, (m, u) => {
     const found = TK.meta.members.find((x) => (x.username || '').toLowerCase() === u.toLowerCase() || x.name.toLowerCase() === u.toLowerCase() || x.name.toLowerCase().startsWith(u.toLowerCase() + ' '));
     if (found) { out.assignee_id = found.id; return ' '; }
     return m;
@@ -1313,6 +1313,7 @@ function wirePage(el) {
     }
     const m = plainTxt.slice(0, caretOffset(t)).match(/(?:^|\s)\/([\p{L}\d]{0,20})$/u);
     if (m) showSlash(id, m[1].toLowerCase()); else hideSlash();
+    mentionCheck(t, plainTxt.slice(0, caretOffset(t)));
   });
   blocks.addEventListener('beforeinput', (e) => {
     const t = e.target.closest?.('.blk-text');
@@ -1841,3 +1842,97 @@ closePage = async function closePageSimple() {
   await _closePageSimple();
   if (state.tab === 'tasks' && $('stList')) drawSimple();
 };
+
+
+/* ═══════════════ @-згадки: список людей, як у Notion ═══════════════ */
+let mention = null;
+function mentionToken(u) {
+  return u.username || u.name.split(/\s+/)[0];
+}
+function mentionCheck(el, before) {
+  const m = before.match(/(?:^|\s)@([\p{L}\d_]{0,32})$/u);
+  if (!m || !TK.meta?.members?.length) return hideMention();
+  const q = m[1].toLowerCase();
+  const items = TK.meta.members.filter((u) => !q || u.name.toLowerCase().includes(q) || (u.username || '').toLowerCase().includes(q)).slice(0, 8);
+  if (!items.length) return hideMention();
+  mention = { el, q: m[1], items, i: Math.min(mention?.el === el ? mention.i : 0, items.length - 1) };
+  drawMention();
+}
+function drawMention() {
+  let box = document.getElementById('mentionMenu');
+  if (!box) {
+    box = document.createElement('div');
+    box.id = 'mentionMenu';
+    box.className = 'slash mention';
+    document.body.appendChild(box);
+    box.addEventListener('pointerdown', (e) => e.preventDefault());
+    box.addEventListener('click', (e) => { const it = e.target.closest('[data-i]'); if (it) pickMention(Number(it.dataset.i)); });
+  }
+  const { items, i, el } = mention;
+  box.innerHTML = `<div class="slash-h">Люди</div>${items.map((u, k) => `<button class="slash-it ${k === i ? 'on' : ''}" data-i="${k}">${avatar(u.name)}<span><b>${esc(u.name)}</b><small>${u.username ? '@' + esc(u.username) : ''}${u.id === state.me?.user?.id ? ' · я' : ''}</small></span></button>`).join('')}`;
+  const r = el.getBoundingClientRect();
+  const vv = window.visualViewport;
+  const vh = vv ? vv.height + vv.offsetTop : window.innerHeight;
+  box.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - 268))}px`;
+  const h = Math.min(items.length * 50 + 34, 320);
+  box.style.top = r.bottom + 6 + h > vh ? `${Math.max(8, r.top - h - 6)}px` : `${r.bottom + 6}px`;
+  box.classList.remove('hidden');
+}
+function hideMention() { mention = null; document.getElementById('mentionMenu')?.classList.add('hidden'); }
+function pickMention(k) {
+  if (!mention) return;
+  const { el, items } = mention;
+  const u = items[k];
+  hideMention();
+  if (!u) return;
+  if (el.tagName === 'INPUT') {
+    const pos = el.selectionStart ?? el.value.length;
+    const before = el.value.slice(0, pos).replace(/@[\p{L}\d_]*$/u, `@${mentionToken(u)} `);
+    el.value = before + el.value.slice(pos);
+    el.setSelectionRange(before.length, before.length);
+    el.focus();
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    return;
+  }
+  // блок редактора: «@запит» → жирне «@Імʼя»
+  const sel = getSelection();
+  if (!sel.rangeCount) return;
+  const range = sel.getRangeAt(0);
+  const node = range.startContainer;
+  if (node.nodeType !== 3) return;
+  const txt = node.textContent.slice(0, range.startOffset);
+  const at = txt.search(/@[\p{L}\d_]*$/u);
+  if (at < 0) return;
+  const r = document.createRange();
+  r.setStart(node, at);
+  r.setEnd(node, range.startOffset);
+  r.deleteContents();
+  const b = document.createElement('b');
+  b.textContent = `@${u.name}`;
+  r.insertNode(b);
+  const space = document.createTextNode('\u00a0');
+  b.after(space);
+  const nr = document.createRange();
+  nr.setStart(space, 1);
+  nr.collapse(true);
+  sel.removeAllRanges();
+  sel.addRange(nr);
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+}
+// поле швидкого запису, назви в таблиці
+document.addEventListener('input', (e) => {
+  const el = e.target;
+  if (!(el instanceof HTMLInputElement) || !el.matches('#stNew, .st-title, #tblNew, .kb-quick textarea')) return;
+  mentionCheck(el, el.value.slice(0, el.selectionStart ?? el.value.length));
+});
+document.addEventListener('keydown', (e) => {
+  if (!mention) return;
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault(); e.stopPropagation();
+    mention.i = (mention.i + (e.key === 'ArrowDown' ? 1 : -1) + mention.items.length) % mention.items.length;
+    return drawMention();
+  }
+  if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); e.stopPropagation(); return pickMention(mention.i); }
+  if (e.key === 'Escape') { e.preventDefault(); return hideMention(); }
+}, true);
+document.addEventListener('focusout', () => setTimeout(() => { if (mention && document.activeElement !== mention.el) hideMention(); }, 150));
