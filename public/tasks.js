@@ -1759,6 +1759,8 @@ async function renderSimple() {
     <div id="stList" class="st-list"><div class="muted" style="padding:16px">Завантаження…</div></div>`;
   await drawSimple();
   const form = $('stAdd');
+  const plusBtn = form?.querySelector('.st-add-btn');
+  if (plusBtn) plusBtn.onclick = (e) => { e.preventDefault(); const v = $('stNew').value.trim(); $('stNew').value = ''; openDraft(v ? parseQuick(v) : {}); };
   if (form) form.onsubmit = (e) => {
     e.preventDefault();
     const inp = $('stNew');
@@ -1833,7 +1835,7 @@ document.addEventListener('focusout', (e) => { if (e.target.classList?.contains(
 screens.tasks = renderSimple;
 const _setTabSimple = setTab;
 setTab = function setTabSimple(tab) {
-  if (tab === 'new' && state.tab === 'tasks') { const i = $('stNew'); if (i) { i.focus(); i.scrollIntoView({ block: 'center' }); } return; }
+  if (tab === 'new' && state.tab === 'tasks') return openDraft();
   return _setTabSimple(tab);
 };
 // після закриття сторінки задачі — оновлюємо таблицю
@@ -1885,7 +1887,7 @@ function pickMention(k) {
   const u = items[k];
   hideMention();
   if (!u) return;
-  if (el.tagName === 'INPUT') {
+  if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') {
     const pos = el.selectionStart ?? el.value.length;
     const before = el.value.slice(0, pos).replace(/@[\p{L}\d_]*$/u, `@${mentionToken(u)} `);
     el.value = before + el.value.slice(pos);
@@ -1936,3 +1938,105 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') { e.preventDefault(); return hideMention(); }
 }, true);
 document.addEventListener('focusout', () => setTimeout(() => { if (mention && document.activeElement !== mention.el) hideMention(); }, 150));
+
+
+/* ═══════════════ «＋» — форма нової задачі, як у Notion, з кнопкою «Створити» ═══════════════ */
+let draft = null;
+function draftShell() {
+  let el = document.getElementById('draftView');
+  if (!el) { el = document.createElement('div'); el.id = 'draftView'; el.className = 'pg draft hidden'; document.body.appendChild(el); }
+  return el;
+}
+function openDraft(prefill = {}) {
+  if (!canWritePages()) return toast('У режимі перегляду не можна створювати задачі');
+  closePicker();
+  draft = { title: '', status: 'todo', priority: null, assignee_id: null, due: null, project_id: null, project_label: null, tags: [], note: '', ...prefill };
+  if (state.tk.who === 'me' && !draft.assignee_id && iCanBeAssignee()) draft.assignee_id = state.me.user.id;
+  applyLocal(draft, { assignee_id: draft.assignee_id });
+  const el = draftShell();
+  el.classList.remove('hidden');
+  document.body.classList.add('pg-open');
+  drawDraft();
+  setTimeout(() => el.querySelector('.dr-title')?.focus(), 60);
+  try { const bb = tgWebApp()?.BackButton; bb?.show(); bb?.onClick(closeDraft); } catch {}
+}
+function closeDraft() {
+  closePicker(); hideMention();
+  const el = document.getElementById('draftView');
+  el?.classList.add('hidden');
+  if (el) el.innerHTML = '';
+  if (!TK.page) document.body.classList.remove('pg-open');
+  draft = null;
+  try { const bb = tgWebApp()?.BackButton; bb?.offClick(closeDraft); if (!TK.page) bb?.hide(); } catch {}
+}
+function drawDraft() {
+  const d = draft;
+  const el = draftShell();
+  const props = [
+    ['status', '◷', 'Статус', stPill(d.status)],
+    ['assignee_id', '👤', 'Відповідальний', d.assignee_name ? `${avatar(d.assignee_name, 'sm')} ${esc(d.assignee_name)}` : '<span class="ph">Нікого</span>'],
+    ['due', '📅', 'Дедлайн', d.due ? esc(relDate(d.due)) : '<span class="ph">Порожньо</span>'],
+    ['priority', '⚑', 'Пріоритет', prPill(d.priority) || '<span class="ph">Порожньо</span>'],
+    ['project_id', '📁', 'Проєкт', d.project_name ? esc(d.project_name) : '<span class="ph">Порожньо</span>'],
+    ['tags', '#', 'Теги', tagPills(d.tags) || '<span class="ph">Порожньо</span>'],
+  ];
+  el.innerHTML = `<div class="pg-bar"><button class="pg-back" data-dr="close">‹</button><div class="pg-crumbs"><span>📝 Нова задача</span></div></div>
+    <div class="pg-scroll"><div class="pg-inner">
+      <textarea class="dr-title pg-title" rows="1" placeholder="Назва задачі">${esc(d.title)}</textarea>
+      <div class="pg-props">${props.map(([k, ic, name, val]) => `<div class="pp" data-dr-prop="${k}"><span class="pp-k"><i>${ic}</i>${name}</span><span class="pp-v">${val}</span></div>`).join('')}</div>
+      <textarea class="dr-note" rows="4" placeholder="Опис, деталі, посилання… (необовʼязково)">${esc(d.note)}</textarea>
+    </div></div>
+    <div class="dr-foot"><button class="btn ghost" data-dr="close">Скасувати</button><button class="btn" data-dr="create">Створити</button></div>`;
+  const t = el.querySelector('.dr-title');
+  const grow = (x) => { x.style.height = 'auto'; x.style.height = `${x.scrollHeight}px`; };
+  grow(t);
+  t.oninput = () => { draft.title = t.value; grow(t); };
+  t.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey && !mention) { e.preventDefault(); el.querySelector('.dr-note').focus(); } };
+  el.querySelector('.dr-note').oninput = (e) => { draft.note = e.target.value; };
+}
+async function createDraft(btn) {
+  const d = draft;
+  // @нік / завтра / ! прямо в назві теж працюють
+  const parsed = parseQuick(d.title || '');
+  const title = (parsed.title || d.title || '').trim();
+  if (!title) { toast('Впиши назву задачі'); draftShell().querySelector('.dr-title')?.focus(); return; }
+  const body = {
+    kind: 'task', title, status: d.status, priority: d.priority || parsed.priority || null,
+    assignee_id: d.assignee_id || parsed.assignee_id || null, due: d.due || parsed.due || null,
+    tags: [...new Set([...(d.tags || []), ...(parsed.tags || [])])],
+    ...(d.project_id ? { project_id: d.project_id } : d.project_label ? { project_label: d.project_label } : {}),
+    blocks: d.note.trim() ? d.note.trim().split(/\n+/).map((line) => ({ type: 'p', text: esc(line) })) : [],
+  };
+  btn.disabled = true;
+  btn.textContent = 'Створюю…';
+  try {
+    const p = await api('/pages', { method: 'POST', body });
+    if (p.assignee_invite) showInvite(p);
+    closeDraft();
+    toast('Задачу створено ✨');
+    if (state.tab === 'tasks' && $('stList')) drawSimple(); else if (state.tab === 'tasks') tkBody();
+  } catch (e) {
+    toast(e.message);
+    btn.disabled = false;
+    btn.textContent = 'Створити';
+  }
+}
+document.addEventListener('click', (e) => {
+  const dv = e.target.closest('#draftView');
+  if (!dv || !draft) return;
+  const a = e.target.closest('[data-dr]')?.dataset.dr;
+  if (a === 'close') return closeDraft();
+  if (a === 'create') return createDraft(e.target.closest('[data-dr]'));
+  const prop = e.target.closest('[data-dr-prop]');
+  if (prop) {
+    return propPicker(prop.dataset.drProp, draft, prop, (patch, keep) => {
+      applyLocal(draft, patch);
+      if (keep) prop.querySelector('.pp-v').innerHTML = tagPills(draft.tags) || '<span class="ph">Порожньо</span>';
+      else drawDraft();
+    });
+  }
+});
+// @ у назві нової задачі — той самий список людей
+document.addEventListener('input', (e) => {
+  if (e.target.classList?.contains('dr-title')) mentionCheck(e.target, e.target.value.slice(0, e.target.selectionStart ?? e.target.value.length));
+});

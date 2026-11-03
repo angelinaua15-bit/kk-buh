@@ -389,3 +389,12 @@ body.pg-open { overflow: hidden; }
 
 .mention .slash-it .av { width: 32px; height: 32px; font-size: 12px; }
 .mention { width: 250px; }
+
+/* форма нової задачі */
+.pg.draft { z-index: 27; }
+.dr-title { display: block; width: 100%; border: 0; background: none; resize: none; overflow: hidden; color: var(--text); font-family: inherit; padding: 0; margin: 8px 0 14px; }
+.dr-title::placeholder { color: #3d3968; }
+.dr-note { width: 100%; background: rgba(255,255,255,.03); border: 1px solid var(--line); border-radius: 12px; padding: 12px; font-size: 15px; line-height: 1.5; resize: vertical; outline: none; color: var(--text); }
+.dr-note:focus { border-color: rgba(123,92,255,.55); }
+.dr-foot { display: grid; grid-template-columns: 1fr 2fr; gap: 8px; padding: 10px 16px calc(12px + var(--safe-b)); border-top: 1px solid var(--line); background: var(--pg-bg); }
+.pg.draft .pg-scroll { padding-bottom: 24px; }
